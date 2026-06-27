@@ -1,0 +1,159 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-k8s-nodes
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "Infrastructure"
+data:
+  k8s-nodes.json: |
+    {
+      "title": "K8s Nodes",
+      "uid": "k8s-nodes-hub",
+      "schemaVersion": 38,
+      "version": 3,
+      "refresh": "1m",
+      "time": {"from": "now-3h", "to": "now"},
+      "timezone": "browser",
+      "templating": {
+        "list": [
+          {
+            "name": "cluster",
+            "label": "Cluster",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "query": "label_values(kube_node_info{job=\"kube-state-metrics\"}, cluster)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".*",
+            "sort": 1
+          },
+          {
+            "name": "node",
+            "label": "Node",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "query": "label_values(node_uname_info{cluster=~\"$cluster\"}, node)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".*",
+            "sort": 1
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "CPU Usage by Node",
+          "description": "Percentage of CPU time not idle, per node — from node-exporter DaemonSet",
+          "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0, "max": 1,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 0.75},
+                  {"color": "red", "value": 0.85}
+                ]
+              }
+            }
+          },
+          "targets": [{
+            "expr": "1 - avg by (node) (rate(node_cpu_seconds_total{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\",mode=\"idle\"}[5m]))",
+            "legendFormat": "{{node}}",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Memory Usage by Node",
+          "description": "Fraction of total memory that is in use (not MemAvailable), per node",
+          "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0, "max": 1,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 0.80},
+                  {"color": "red", "value": 0.90}
+                ]
+              }
+            }
+          },
+          "targets": [{
+            "expr": "1 - avg by (node) (node_memory_MemAvailable_bytes{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\"} / node_memory_MemTotal_bytes{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\"})",
+            "legendFormat": "{{node}}",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Disk Usage by Node / Mountpoint",
+          "description": "Fraction of disk space used per node and mountpoint (tmpfs/overlay excluded)",
+          "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0, "max": 1,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "yellow", "value": 0.70},
+                  {"color": "red", "value": 0.80}
+                ]
+              }
+            }
+          },
+          "targets": [{
+            "expr": "1 - max by (node, mountpoint) (node_filesystem_avail_bytes{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\",fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\",fstype!~\"tmpfs|overlay\"})",
+            "legendFormat": "{{node}} {{mountpoint}}",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 4,
+          "type": "table",
+          "title": "Node Ready Status",
+          "description": "1 = Ready, 0 = Not Ready — populated after kube-state-metrics fix",
+          "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "options": {"sortBy": [{"displayName": "node"}]},
+          "fieldConfig": {
+            "overrides": [{
+              "matcher": {"id": "byName", "options": "Value"},
+              "properties": [
+                {"id": "mappings", "value": [
+                  {"type": "value", "options": {"1": {"text": "Ready", "color": "green", "index": 0}}},
+                  {"type": "value", "options": {"0": {"text": "Not Ready", "color": "red", "index": 1}}}
+                ]},
+                {"id": "custom.displayMode", "value": "color-background"}
+              ]
+            }]
+          },
+          "targets": [{
+            "expr": "kube_node_status_condition{job=\"kube-state-metrics\",cluster=~\"$cluster\",condition=\"Ready\",status=\"true\"}",
+            "legendFormat": "{{node}}",
+            "instant": true,
+            "refId": "A"
+          }],
+          "transformations": [{"id": "labelsToFields", "options": {"mode": "columns"}}]
+        }
+      ]
+    }

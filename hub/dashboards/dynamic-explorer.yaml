@@ -1,0 +1,263 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-dynamic-explorer
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "Explorer"
+data:
+  dynamic-explorer.json: |
+    {
+      "title": "Dynamic Logs & Traces Explorer",
+      "uid": "dynamic-explorer",
+      "schemaVersion": 38,
+      "version": 3,
+      "refresh": "30s",
+      "time": {"from": "now-1h", "to": "now"},
+      "timezone": "browser",
+      "tags": ["explorer", "logs", "traces", "dynamic"],
+      "description": "Multi-app explorer with cluster/namespace/pod/container dropdowns and keyword search for logs and traces",
+      "templating": {
+        "list": [
+          {
+            "name": "cluster",
+            "label": "Cluster",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "query": "label_values(kube_node_info{job=\"kube-state-metrics\"}, cluster)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".+",
+            "current": {"selected": true, "text": "All", "value": "$__all"},
+            "sort": 1
+          },
+          {
+            "name": "namespace",
+            "label": "Namespace",
+            "type": "query",
+            "datasource": {"type": "loki", "uid": "loki"},
+            "query": "label_values({cluster=~\"$cluster\"}, namespace)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".+",
+            "sort": 1
+          },
+          {
+            "name": "pod",
+            "label": "Pod",
+            "type": "query",
+            "datasource": {"type": "loki", "uid": "loki"},
+            "query": "label_values({cluster=~\"$cluster\",namespace=~\"$namespace\"}, pod)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".+",
+            "sort": 1
+          },
+          {
+            "name": "container",
+            "label": "Container",
+            "type": "query",
+            "datasource": {"type": "loki", "uid": "loki"},
+            "query": "label_values({cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\"}, container)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".+",
+            "sort": 1
+          },
+          {
+            "name": "level",
+            "label": "Log Level",
+            "type": "custom",
+            "query": "All : .*,error : (?i)(error|err),warn : (?i)(warn|warning),info : (?i)info,debug : (?i)debug",
+            "current": {"selected": true, "text": "All", "value": ".*"},
+            "options": [
+              {"selected": true, "text": "All", "value": ".*"},
+              {"selected": false, "text": "error", "value": "(?i)(error|err)"},
+              {"selected": false, "text": "warn", "value": "(?i)(warn|warning)"},
+              {"selected": false, "text": "info", "value": "(?i)info"},
+              {"selected": false, "text": "debug", "value": "(?i)debug"}
+            ],
+            "multi": false,
+            "includeAll": false,
+            "hide": 0,
+            "refresh": 0,
+            "sort": 0
+          },
+          {
+            "name": "service",
+            "label": "Service (traces)",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "mimir-hub"},
+            "query": "label_values(traces_spanmetrics_calls_total{namespace=~\"$namespace\"}, service_name)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".*",
+            "sort": 1
+          },
+          {
+            "name": "search",
+            "label": "Keyword Search",
+            "type": "textbox",
+            "query": "",
+            "current": {"selected": false, "text": "", "value": ""}
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "row",
+          "title": "Service RED Metrics ",
+          "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Request Rate (RPS)",
+          "description": "Requests per second from Tempo span metrics — select service(s) above",
+          "gridPos": {"x": 0, "y": 1, "w": 8, "h": 7},
+          "datasource": {"type": "prometheus", "uid": "mimir-hub"},
+          "fieldConfig": {"defaults": {"unit": "reqps", "min": 0}},
+          "targets": [{
+            "expr": "sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~\"$service\",namespace=~\"$namespace\"}[5m]))",
+            "legendFormat": "{{service_name}}",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Error Rate %",
+          "description": "Fraction of spans with STATUS_CODE_ERROR — alert fires at >5%",
+          "gridPos": {"x": 8, "y": 1, "w": 8, "h": 7},
+          "datasource": {"type": "prometheus", "uid": "mimir-hub"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "min": 0,
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.01}, {"color": "red", "value": 0.05}]},
+              "custom": {"thresholdsStyle": {"mode": "line+area"}}
+            }
+          },
+          "targets": [{
+            "expr": "sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~\"$service\",namespace=~\"$namespace\",status_code=\"STATUS_CODE_ERROR\"}[5m])) / sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~\"$service\",namespace=~\"$namespace\"}[5m]))",
+            "legendFormat": "{{service_name}}",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "Latency p50 / p95 / p99",
+          "description": "Request duration percentiles in milliseconds from span metrics histograms",
+          "gridPos": {"x": 16, "y": 1, "w": 8, "h": 7},
+          "datasource": {"type": "prometheus", "uid": "mimir-hub"},
+          "fieldConfig": {"defaults": {"unit": "ms", "min": 0}},
+          "targets": [
+            {"expr": "histogram_quantile(0.50, sum by (service_name, le) (rate(traces_spanmetrics_latency_bucket{service_name=~\"$service\",namespace=~\"$namespace\"}[5m]))) * 1000", "legendFormat": "p50 {{service_name}}", "refId": "A"},
+            {"expr": "histogram_quantile(0.95, sum by (service_name, le) (rate(traces_spanmetrics_latency_bucket{service_name=~\"$service\",namespace=~\"$namespace\"}[5m]))) * 1000", "legendFormat": "p95 {{service_name}}", "refId": "B"},
+            {"expr": "histogram_quantile(0.99, sum by (service_name, le) (rate(traces_spanmetrics_latency_bucket{service_name=~\"$service\",namespace=~\"$namespace\"}[5m]))) * 1000", "legendFormat": "p99 {{service_name}}", "refId": "C"}
+          ]
+        },
+        {
+          "id": 5,
+          "type": "row",
+          "title": "Logs",
+          "gridPos": {"x": 0, "y": 8, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "Log Rate",
+          "description": "Log ingestion rate — use to detect unusual silence or log storms",
+          "gridPos": {"x": 0, "y": 9, "w": 12, "h": 6},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "fieldConfig": {"defaults": {"unit": "ops", "min": 0}},
+          "targets": [{
+            "expr": "sum by (namespace) (rate({cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\"} |~ \"$level\" [5m]))",
+            "legendFormat": "{{namespace}}",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "Error Log Rate",
+          "description": "Rate of log lines matching 'error' keyword — spikes indicate application failures",
+          "gridPos": {"x": 12, "y": 9, "w": 12, "h": 6},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "min": 0,
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 0.05}]},
+              "custom": {"thresholdsStyle": {"mode": "line"}}
+            }
+          },
+          "targets": [{
+            "expr": "sum by (namespace) (rate({cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\"} |= \"error\" [5m]))",
+            "legendFormat": "{{namespace}} errors",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 8,
+          "type": "logs",
+          "title": "Live Logs  —  use Keyword Search to filter",
+          "description": "Logs matching selected cluster/namespace/pod/container and keyword filter",
+          "gridPos": {"x": 0, "y": 15, "w": 24, "h": 14},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "options": {
+            "dedupStrategy": "none",
+            "showTime": true,
+            "showLabels": true,
+            "showCommonLabels": false,
+            "wrapLogMessage": true,
+            "sortOrder": "Descending",
+            "enableLogDetails": true
+          },
+          "targets": [{
+            "expr": "{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\"} |~ \"(?i)$search\" |~ \"$level\"",
+            "refId": "A",
+            "maxLines": 500
+          }]
+        },
+        {
+          "id": 9,
+          "type": "row",
+          "title": "Recent Errors",
+          "gridPos": {"x": 0, "y": 29, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "id": 10,
+          "type": "logs",
+          "title": "Error Logs  —  keyword search also applies",
+          "description": "Log lines containing 'error' within the selected scope",
+          "gridPos": {"x": 0, "y": 30, "w": 24, "h": 10},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "options": {
+            "dedupStrategy": "signature",
+            "showTime": true,
+            "showLabels": true,
+            "wrapLogMessage": true,
+            "sortOrder": "Descending",
+            "enableLogDetails": true
+          },
+          "targets": [{
+            "expr": "{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\"} |= \"error\" |~ \"(?i)$search\"",
+            "refId": "A",
+            "maxLines": 200
+          }]
+        }
+      ]
+    }

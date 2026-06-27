@@ -1,0 +1,129 @@
+# ── Credentials — inject from a Kubernetes Secret ────────────────────────────
+# Create a Secret named monitoring-loki-s3 with keys:
+#   S3_ACCESS_KEY, S3_SECRET_KEY, S3_ENDPOINT
+# Example:
+#   kubectl create secret generic monitoring-loki-s3 -n monitoring \
+#     --from-literal=S3_ENDPOINT=<YOUR_S3_ENDPOINT> \
+#     --from-literal=S3_ACCESS_KEY=<YOUR_ACCESS_KEY> \
+#     --from-literal=S3_SECRET_KEY=<YOUR_SECRET_KEY>
+
+loki:
+  auth_enabled: true    # multi-tenancy via X-Scope-OrgID header
+
+  querier:
+    multi_tenant_queries_enabled: true
+
+  commonConfig:
+    replication_factor: 1   # single binary, no ring replication
+
+  # Schema — TSDB index + S3 object store
+  schemaConfig:
+    configs:
+      - from: "2024-01-01"
+        store: tsdb
+        object_store: s3
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+
+  # S3 storage — credentials from env vars
+  storage:
+    type: s3
+    s3:
+      endpoint: ${S3_ENDPOINT}
+      accessKeyId: ${S3_ACCESS_KEY}
+      secretAccessKey: ${S3_SECRET_KEY}
+      region: us-east-1
+      s3ForcePathStyle: true
+      insecure: false
+    bucketNames:
+      chunks: loki-chunks   # rename to match your S3 bucket
+      ruler: loki-ruler
+      admin: loki-chunks
+
+  rulerConfig:
+    storage:
+      type: s3
+      s3:
+        endpoint: ${S3_ENDPOINT}
+        access_key_id: ${S3_ACCESS_KEY}
+        secret_access_key: ${S3_SECRET_KEY}
+        region: us-east-1
+        s3forcepathstyle: true
+        insecure: false
+        bucketnames: loki-ruler
+    rule_path: /rules
+    alertmanager_url: http://alertmanager-monitoring.monitoring.svc.cluster.local:9093
+    enable_api: true
+
+  limits_config:
+    reject_old_samples: true
+    reject_old_samples_max_age: 168h
+    max_cache_freshness_per_query: 10m
+    retention_period: 744h   # 31 days
+
+# ── Deployment mode ────────────────────────────────────────────────────────────
+deploymentMode: SingleBinary
+
+singleBinary:
+  replicas: 1
+  persistence:
+    enabled: false   # S3 backend, no PVC needed
+  extraVolumes:
+    - name: loki-data
+      emptyDir: {}
+  extraVolumeMounts:
+    - name: loki-data
+      mountPath: /var/loki
+  extraArgs:
+    - --config.expand-env=true
+  extraEnvFrom:
+    - secretRef:
+        name: monitoring-loki-s3
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+
+# Disable distributed components
+read:
+  replicas: 0
+write:
+  replicas: 0
+backend:
+  replicas: 0
+
+# ── Disable caches ─────────────────────────────────────────────────────────────
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+
+# ── Gateway (NGINX proxy) ──────────────────────────────────────────────────────
+gateway:
+  nginxConfig:
+    # Use CoreDNS ClusterIP directly — hostname-based resolver causes nginx to fail
+    # with 'unexpected A record' when CoreDNS returns AAAA+A records for headless services.
+    # Run: kubectl get svc -n kube-system kube-dns  to find your CoreDNS IP.
+    resolver: "10.96.0.10 valid=30s ipv6=off"
+  enabled: true
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hosts:
+      - host: hub-loki.<YOUR_DOMAIN>
+        paths:
+          - path: /
+            pathType: Prefix
+    tls:
+      - secretName: hub-loki-tls
+        hosts:
+          - hub-loki.<YOUR_DOMAIN>
+    annotations:
+      cert-manager.io/cluster-issuer: letsencrypt
+      nginx.ingress.kubernetes.io/proxy-body-size: "32m"
+      external-dns.alpha.kubernetes.io/target: "<YOUR_EXTERNAL_IP>"

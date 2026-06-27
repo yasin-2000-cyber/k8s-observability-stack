@@ -1,0 +1,24 @@
+image:
+  repository: grafana/alloy
+  tag: v1.9.0
+  pullPolicy: IfNotPresent
+
+# Mimir and Loki endpoints — in-cluster, same namespace
+mimir:
+  url: http://mimir-nginx.monitoring.svc.cluster.local:80/api/v1/push
+
+loki:
+  url: http://loki-gateway.monitoring.svc.cluster.local:80/loki/api/v1/push
+
+# Set to your hub cluster name — used as the Mimir tenant ID and Loki master tenant
+cluster: hub
+
+# Your datacenter or region label (e.g. "us-east", "eu-central", "on-prem")
+datacenter: "<YOUR_DATACENTER>"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 2Gi

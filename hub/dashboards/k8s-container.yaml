@@ -1,0 +1,369 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-k8s-container
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "Infrastructure"
+data:
+  k8s-container.json: |
+    {
+      "title": "Kubernetes / Container",
+      "uid": "k8s-container",
+      "schemaVersion": 38,
+      "version": 1,
+      "refresh": "30s",
+      "time": {"from": "now-1h", "to": "now"},
+      "timezone": "browser",
+      "tags": ["kubernetes", "container", "resources"],
+      "templating": {
+        "list": [
+          {
+            "name": "cluster",
+            "label": "Cluster",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "query": "label_values(kube_pod_info{job=\"kube-state-metrics\"}, cluster)",
+            "refresh": 2,
+            "multi": false,
+            "includeAll": true,
+            "allValue": ".*",
+            "sort": 1,
+            "current": {}
+          },
+          {
+            "name": "namespace",
+            "label": "Namespace",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "query": "label_values(kube_pod_info{job=\"kube-state-metrics\",cluster=~\"$cluster\"}, namespace)",
+            "refresh": 2,
+            "multi": false,
+            "includeAll": true,
+            "allValue": ".*",
+            "sort": 1,
+            "current": {}
+          },
+          {
+            "name": "pod",
+            "label": "Pod",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "query": "label_values(kube_pod_info{job=\"kube-state-metrics\",cluster=~\"$cluster\",namespace=~\"$namespace\"}, pod)",
+            "refresh": 2,
+            "multi": false,
+            "includeAll": true,
+            "allValue": ".*",
+            "sort": 1,
+            "current": {}
+          },
+          {
+            "name": "container",
+            "label": "Container",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "query": "label_values(kube_pod_container_info{job=\"kube-state-metrics\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\"}, container)",
+            "refresh": 2,
+            "multi": false,
+            "includeAll": true,
+            "allValue": ".*",
+            "sort": 1,
+            "current": {}
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "CPU Usage",
+          "description": "Current CPU usage (cores)",
+          "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 3,
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.5}, {"color": "red", "value": 0.9}]}
+            }
+          },
+          "targets": [{
+            "expr": "sum(rate(container_cpu_usage_seconds_total{job=\"cadvisor\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",container!=\"\",container!=\"POD\"}[5m]))",
+            "legendFormat": "",
+            "refId": "A",
+            "instant": true
+          }]
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Memory (Working Set)",
+          "description": "Current working-set memory usage",
+          "gridPos": {"x": 4, "y": 0, "w": 4, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 536870912}, {"color": "red", "value": 1073741824}]}
+            }
+          },
+          "targets": [{
+            "expr": "sum(container_memory_working_set_bytes{job=\"cadvisor\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",container!=\"\",container!=\"POD\"})",
+            "legendFormat": "",
+            "refId": "A",
+            "instant": true
+          }]
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "CPU Throttling",
+          "description": "Fraction of time container is CPU-throttled",
+          "gridPos": {"x": 8, "y": 0, "w": 4, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.25}, {"color": "red", "value": 0.5}]}
+            }
+          },
+          "targets": [{
+            "expr": "sum(rate(container_cpu_cfs_throttled_seconds_total{job=\"cadvisor\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",container!=\"\",container!=\"POD\"}[5m])) / sum(rate(container_cpu_cfs_periods_total{job=\"cadvisor\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",container!=\"\",container!=\"POD\"}[5m]))",
+            "legendFormat": "",
+            "refId": "A",
+            "instant": true
+          }]
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Restarts",
+          "description": "Total container restarts",
+          "gridPos": {"x": 12, "y": 0, "w": 4, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}
+            }
+          },
+          "targets": [{
+            "expr": "sum(kube_pod_container_status_restarts_total{job=\"kube-state-metrics\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\"})",
+            "legendFormat": "",
+            "refId": "A",
+            "instant": true
+          }]
+        },
+        {
+          "id": 5,
+          "type": "stat",
+          "title": "OOM Killed",
+          "description": "Container was last terminated by OOMKill",
+          "gridPos": {"x": 16, "y": 0, "w": 4, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}
+            }
+          },
+          "targets": [{
+            "expr": "sum(kube_pod_container_status_last_terminated_reason{job=\"kube-state-metrics\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",reason=\"OOMKilled\"})",
+            "legendFormat": "",
+            "refId": "A",
+            "instant": true
+          }]
+        },
+        {
+          "id": 6,
+          "type": "stat",
+          "title": "Running",
+          "description": "1 = container is running",
+          "gridPos": {"x": 20, "y": 0, "w": 4, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "mappings": [{"type": "value", "options": {"0": {"text": "Not Running", "color": "red"}, "1": {"text": "Running", "color": "green"}}}],
+              "thresholds": {"steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+            }
+          },
+          "targets": [{
+            "expr": "sum(kube_pod_container_status_running{job=\"kube-state-metrics\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\"})",
+            "legendFormat": "",
+            "refId": "A",
+            "instant": true
+          }]
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "CPU Usage",
+          "description": "CPU cores used over time. Dashed lines show request (green) and limit (red) if set.",
+          "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"unit": "short", "min": 0, "custom": {"lineWidth": 2}},
+            "overrides": [
+              {"matcher": {"id": "byName", "options": "CPU Request"}, "properties": [{"id": "custom.lineStyle", "value": {"dash": [5, 5], "fill": "dash"}}, {"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]},
+              {"matcher": {"id": "byName", "options": "CPU Limit"}, "properties": [{"id": "custom.lineStyle", "value": {"dash": [5, 5], "fill": "dash"}}, {"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]}
+            ]
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{job=\"cadvisor\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",container!=\"\",container!=\"POD\"}[5m]))",
+              "legendFormat": "CPU Usage",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(kube_pod_container_resource_requests{job=\"kube-state-metrics\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",resource=\"cpu\"})",
+              "legendFormat": "CPU Request",
+              "refId": "B"
+            },
+            {
+              "expr": "sum(kube_pod_container_resource_limits{job=\"kube-state-metrics\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",resource=\"cpu\"})",
+              "legendFormat": "CPU Limit",
+              "refId": "C"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Memory Usage",
+          "description": "Working-set memory over time. Dashed lines show request (green) and limit (red) if set.",
+          "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"unit": "bytes", "min": 0, "custom": {"lineWidth": 2}},
+            "overrides": [
+              {"matcher": {"id": "byName", "options": "Memory Request"}, "properties": [{"id": "custom.lineStyle", "value": {"dash": [5, 5], "fill": "dash"}}, {"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}]},
+              {"matcher": {"id": "byName", "options": "Memory Limit"}, "properties": [{"id": "custom.lineStyle", "value": {"dash": [5, 5], "fill": "dash"}}, {"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}]}
+            ]
+          },
+          "targets": [
+            {
+              "expr": "sum(container_memory_working_set_bytes{job=\"cadvisor\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",container!=\"\",container!=\"POD\"})",
+              "legendFormat": "Memory Usage",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(kube_pod_container_resource_requests{job=\"kube-state-metrics\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",resource=\"memory\"})",
+              "legendFormat": "Memory Request",
+              "refId": "B"
+            },
+            {
+              "expr": "sum(kube_pod_container_resource_limits{job=\"kube-state-metrics\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",resource=\"memory\"})",
+              "legendFormat": "Memory Limit",
+              "refId": "C"
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "type": "timeseries",
+          "title": "CPU Throttling %",
+          "description": "Percentage of CPU scheduling periods where the container was throttled",
+          "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}},
+          "targets": [{
+            "expr": "sum(rate(container_cpu_cfs_throttled_seconds_total{job=\"cadvisor\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",container!=\"\",container!=\"POD\"}[5m])) / sum(rate(container_cpu_cfs_periods_total{job=\"cadvisor\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",container!=\"\",container!=\"POD\"}[5m]))",
+            "legendFormat": "Throttled %",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "Network Rx / Tx (pod-level)",
+          "description": "Network bytes received and transmitted by the pod",
+          "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"unit": "Bps", "min": 0},
+            "overrides": [{"matcher": {"id": "byName", "options": "Transmit"}, "properties": [{"id": "custom.transform", "value": "negative-Y"}]}]
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(container_network_receive_bytes_total{job=\"cadvisor\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\"}[5m]))",
+              "legendFormat": "Receive",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(rate(container_network_transmit_bytes_total{job=\"cadvisor\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\"}[5m]))",
+              "legendFormat": "Transmit",
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "id": 11,
+          "type": "gauge",
+          "title": "CPU Request vs Limit",
+          "description": "Current CPU usage relative to request and limit",
+          "gridPos": {"x": 0, "y": 20, "w": 12, "h": 6},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.7}, {"color": "red", "value": 0.9}]}
+            }
+          },
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "showThresholdLabels": false, "showThresholdMarkers": true},
+          "targets": [
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{job=\"cadvisor\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",container!=\"\",container!=\"POD\"}[5m]))",
+              "legendFormat": "CPU Usage (cores)",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(kube_pod_container_resource_requests{job=\"kube-state-metrics\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",resource=\"cpu\"})",
+              "legendFormat": "CPU Request (cores)",
+              "refId": "B"
+            },
+            {
+              "expr": "sum(kube_pod_container_resource_limits{job=\"kube-state-metrics\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",resource=\"cpu\"})",
+              "legendFormat": "CPU Limit (cores)",
+              "refId": "C"
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "type": "gauge",
+          "title": "Memory Request vs Limit",
+          "description": "Current memory usage relative to request and limit",
+          "gridPos": {"x": 12, "y": 20, "w": 12, "h": 6},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "min": 0,
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 536870912}, {"color": "red", "value": 1073741824}]}
+            }
+          },
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "showThresholdLabels": false, "showThresholdMarkers": true},
+          "targets": [
+            {
+              "expr": "sum(container_memory_working_set_bytes{job=\"cadvisor\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",container!=\"\",container!=\"POD\"})",
+              "legendFormat": "Memory Usage",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(kube_pod_container_resource_requests{job=\"kube-state-metrics\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",resource=\"memory\"})",
+              "legendFormat": "Memory Request",
+              "refId": "B"
+            },
+            {
+              "expr": "sum(kube_pod_container_resource_limits{job=\"kube-state-metrics\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",resource=\"memory\"})",
+              "legendFormat": "Memory Limit",
+              "refId": "C"
+            }
+          ]
+        }
+      ]
+    }

@@ -1,0 +1,23 @@
+schedule: "*/5 * * * *"   # run every 5 minutes
+
+image: dtzar/helm-kubectl:4.2.1
+
+grafanaUrl: http://grafana.monitoring.svc.cluster.local:80
+mimirUrl: http://mimir-nginx.monitoring.svc.cluster.local:80
+
+# Hub cluster name — namespaces discovered via kubectl (in-cluster service account)
+hubCluster: hub
+
+# Spoke clusters — namespaces discovered via Mimir label values (no kubeconfig needed)
+# Add one entry per spoke cluster name (must match the Mimir tenant ID used by that spoke)
+spokeClusters:
+  - spoke-1
+  # - spoke-2
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

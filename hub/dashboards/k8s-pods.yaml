@@ -1,0 +1,125 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-k8s-pods
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "Infrastructure"
+data:
+  k8s-pods.json: |
+    {
+      "title": "K8s Pods",
+      "uid": "k8s-pods-hub",
+      "schemaVersion": 38,
+      "version": 3,
+      "refresh": "1m",
+      "time": {"from": "now-3h", "to": "now"},
+      "timezone": "browser",
+      "templating": {
+        "list": [
+          {
+            "name": "cluster",
+            "label": "Cluster",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "query": "label_values(kube_pod_info{job=\"kube-state-metrics\"}, cluster)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".*",
+            "sort": 1
+          },
+          {
+            "name": "namespace",
+            "label": "Namespace",
+            "type": "query",
+            "datasource": {"type": "loki", "uid": "loki"},
+            "query": "label_values({cluster=~\"$cluster\"}, namespace)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".*",
+            "sort": 1
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Pod Restarts by Namespace",
+          "description": "Rate of container restarts over the last hour, grouped by namespace",
+          "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {"defaults": {"unit": "short", "min": 0}},
+          "targets": [{
+            "expr": "sum by (namespace) (increase(kube_pod_container_status_restarts_total{job=\"kube-state-metrics\",cluster=~\"$cluster\",namespace=~\"$namespace\"}[1h]))",
+            "legendFormat": "{{namespace}}",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 2,
+          "type": "table",
+          "title": "CrashLoopBackOff Pods",
+          "description": "Pods currently stuck in CrashLoopBackOff waiting state",
+          "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "options": {"sortBy": [{"displayName": "namespace"}]},
+          "targets": [{
+            "expr": "kube_pod_container_status_waiting_reason{job=\"kube-state-metrics\",cluster=~\"$cluster\",reason=\"CrashLoopBackOff\"} > 0",
+            "legendFormat": "{{namespace}}/{{pod}}",
+            "instant": true,
+            "refId": "A"
+          }],
+          "transformations": [{"id": "labelsToFields", "options": {"mode": "columns"}}]
+        },
+        {
+          "id": 3,
+          "type": "table",
+          "title": "OOMKilled Containers",
+          "description": "Containers that were last terminated due to OOM kill",
+          "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "targets": [{
+            "expr": "kube_pod_container_status_last_terminated_reason{job=\"kube-state-metrics\",cluster=~\"$cluster\",reason=\"OOMKilled\"} > 0",
+            "legendFormat": "{{namespace}}/{{pod}}/{{container}}",
+            "instant": true,
+            "refId": "A"
+          }],
+          "transformations": [{"id": "labelsToFields", "options": {"mode": "columns"}}]
+        },
+        {
+          "id": 4,
+          "type": "table",
+          "title": "Image Pull Errors",
+          "description": "Pods waiting because the container image cannot be pulled",
+          "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "targets": [{
+            "expr": "kube_pod_container_status_waiting_reason{job=\"kube-state-metrics\",cluster=~\"$cluster\",reason=~\"ImagePullBackOff|ErrImagePull\"} > 0",
+            "legendFormat": "{{namespace}}/{{pod}} ({{reason}})",
+            "instant": true,
+            "refId": "A"
+          }],
+          "transformations": [{"id": "labelsToFields", "options": {"mode": "columns"}}]
+        },
+        {
+          "id": 5,
+          "type": "table",
+          "title": "Pending Pods",
+          "description": "Pods in Pending phase — may indicate resource pressure or scheduling issues",
+          "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "targets": [{
+            "expr": "kube_pod_status_phase{job=\"kube-state-metrics\",cluster=~\"$cluster\",phase=\"Pending\"} > 0",
+            "legendFormat": "{{namespace}}/{{pod}}",
+            "instant": true,
+            "refId": "A"
+          }],
+          "transformations": [{"id": "labelsToFields", "options": {"mode": "columns"}}]
+        }
+      ]
+    }

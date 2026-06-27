@@ -1,0 +1,295 @@
+alloy:
+  configMap:
+    create: true
+    content: |-
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+      // ── Metrics ────────────────────────────────────────────────────────────
+
+      // Discover all nodes for kubelet + cAdvisor scraping
+      discovery.kubernetes "nodes" {
+        role = "node"
+      }
+
+      // Relabel for kubelet scrape (port 10250)
+      discovery.relabel "kubelet" {
+        targets = discovery.kubernetes.nodes.targets
+
+        rule {
+          source_labels = ["__address__"]
+          regex         = "(.+)"
+          target_label  = "__address__"
+          replacement   = "$1:10250"
+        }
+      }
+
+      // Scrape kubelet metrics
+      prometheus.scrape "kubelet" {
+        targets         = discovery.relabel.kubelet.output
+        scheme          = "https"
+        job_name        = "kubelet"
+        scrape_interval = "60s"
+        forward_to      = [prometheus.relabel.cluster_label.receiver]
+
+        tls_config {
+          insecure_skip_verify = true
+        }
+
+        authorization {
+          type             = "Bearer"
+          credentials_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        }
+      }
+
+      // Relabel for cAdvisor scrape
+      discovery.relabel "cadvisor" {
+        targets = discovery.kubernetes.nodes.targets
+
+        rule {
+          source_labels = ["__address__"]
+          regex         = "(.+)"
+          target_label  = "__address__"
+          replacement   = "$1:10250"
+        }
+        rule {
+          target_label = "__metrics_path__"
+          replacement  = "/metrics/cadvisor"
+        }
+      }
+
+      // Scrape cAdvisor metrics
+      prometheus.scrape "cadvisor" {
+        targets         = discovery.relabel.cadvisor.output
+        scheme          = "https"
+        job_name        = "cadvisor"
+        scrape_interval = "60s"
+        forward_to      = [prometheus.relabel.cluster_label.receiver]
+
+        tls_config {
+          insecure_skip_verify = true
+        }
+
+        authorization {
+          type             = "Bearer"
+          credentials_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        }
+      }
+
+      // Discover ServiceMonitor-based targets (Prometheus Operator integration)
+      prometheus.operator.servicemonitors "default" {
+        forward_to = [prometheus.relabel.cluster_label.receiver]
+      }
+
+      // Stamp cluster label on all metrics — replace "spoke-1" with your cluster name
+      prometheus.relabel "cluster_label" {
+        forward_to = [prometheus.remote_write.hub_mimir.receiver]
+
+        rule {
+          target_label = "cluster"
+          replacement  = "spoke-1"   // replace with your spoke cluster name
+        }
+      }
+
+      // Remote write to hub Mimir
+      prometheus.remote_write "hub_mimir" {
+        endpoint {
+          url = "https://hub-mimir.<YOUR_DOMAIN>/api/v1/push"   // replace with your hub Mimir URL
+
+          headers = {
+            "X-Scope-OrgID" = "spoke-1",   // replace with your spoke cluster name
+          }
+
+          tls_config {
+            insecure_skip_verify = true
+          }
+
+          queue_config {
+            max_samples_per_send = 10000
+            batch_send_deadline  = "5s"
+          }
+        }
+      }
+
+      // ── Logs ───────────────────────────────────────────────────────────────
+
+      // Discover pod targets for log tailing
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      // Relabel pod targets to extract useful labels
+      discovery.relabel "pod_logs" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          action        = "replace"
+          target_label  = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          action        = "replace"
+          target_label  = "pod"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          action        = "replace"
+          target_label  = "container"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+          action        = "replace"
+          target_label  = "app"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+          action        = "replace"
+          target_label  = "__path__"
+          separator     = "/"
+          replacement   = "/var/log/pods/*$1/*.log"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "tenant_id"
+          regex         = "(.+)"
+          replacement   = "spoke-1-$1"   // replace "spoke-1" with your cluster name
+        }
+      }
+
+      // Tail pod logs
+      loki.source.kubernetes "pod_logs" {
+        targets    = discovery.relabel.pod_logs.output
+        forward_to = [loki.process.add_labels.receiver]
+      }
+
+      // Process logs: add cluster label + extract trace_id for log↔trace correlation
+      loki.process "add_labels" {
+        stage.static_labels {
+          values = {
+            cluster = "spoke-1",   // replace with your cluster name
+          }
+        }
+
+        // Extract trace_id from JSON logs (Serilog CLEF "@tr", OpenTelemetry "trace_id",
+        // or legacy "TraceId") and store as Loki structured metadata for Grafana correlation.
+        stage.regex {
+          expression = `"(?:@tr|trace_id|TraceId)"\s*:\s*"(?P<trace_id>[a-f0-9]+)"`
+        }
+
+        stage.structured_metadata {
+          values = {
+            trace_id = "trace_id",
+          }
+        }
+
+        stage.tenant {
+          label = "tenant_id"
+        }
+
+        stage.label_drop {
+          values = ["tenant_id"]
+        }
+
+        forward_to = [loki.write.hub_loki.receiver, loki.process.set_master_tenant.receiver]
+      }
+
+      // Write a copy to the cluster-level master tenant so Org 1 (main org) can see all logs
+      loki.process "set_master_tenant" {
+        stage.tenant {
+          value = "spoke-1"   // replace with your cluster name
+        }
+        forward_to = [loki.write.hub_loki.receiver]
+      }
+
+      // Write logs to hub Loki
+      loki.write "hub_loki" {
+        endpoint {
+          url = "https://hub-loki.<YOUR_DOMAIN>/loki/api/v1/push"   // replace with your hub Loki URL
+
+          tls_config {
+            insecure_skip_verify = true
+          }
+        }
+      }
+
+      // ── Traces ─────────────────────────────────────────────────────────────
+
+      // Receive OTLP traces from auto-instrumented apps on this spoke
+      otelcol.receiver.otlp "default" {
+        grpc {
+          endpoint = "0.0.0.0:4317"
+        }
+        http {
+          endpoint = "0.0.0.0:4318"
+        }
+        output {
+          traces = [otelcol.exporter.otlp.hub_tempo.input]
+          logs   = [otelcol.exporter.loki.otlp_logs.input]
+        }
+      }
+
+      // Convert OTLP log records to Loki push format
+      otelcol.exporter.loki "otlp_logs" {
+        forward_to = [loki.process.otlp_logs.receiver]
+      }
+
+      loki.process "otlp_logs" {
+        stage.static_labels {
+          values = {
+            cluster = "spoke-1",   // replace with your cluster name
+          }
+        }
+        stage.tenant {
+          value = "spoke-1"   // replace with your cluster name
+        }
+        forward_to = [loki.write.hub_loki.receiver]
+      }
+
+      // Export traces to hub Tempo over gRPC/TLS
+      otelcol.exporter.otlp "hub_tempo" {
+        client {
+          endpoint = "hub-tempo.<YOUR_DOMAIN>:443"   // replace with your hub Tempo URL
+
+          headers = {
+            "X-Scope-OrgID" = "spoke-1",   // replace with your cluster name
+          }
+
+          tls {
+            insecure_skip_verify = true
+          }
+        }
+      }
+
+  extraPorts:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+
+service:
+  extraPorts:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+
+rbac:
+  create: true
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    memory: 2Gi

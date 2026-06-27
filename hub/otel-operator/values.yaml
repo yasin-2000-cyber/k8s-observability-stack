@@ -1,0 +1,7 @@
+manager:
+  collectorImage:
+    repository: otel/opentelemetry-collector-contrib
+
+admissionWebhooks:
+  certManager:
+    enabled: true   # requires cert-manager to be installed

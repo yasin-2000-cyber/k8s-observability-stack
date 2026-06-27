@@ -1,0 +1,4 @@
+apiVersion: v2
+name: hub-alloy
+description: Grafana Alloy — hub cluster self-monitoring (metrics + logs + traces)
+version: 1.0.0

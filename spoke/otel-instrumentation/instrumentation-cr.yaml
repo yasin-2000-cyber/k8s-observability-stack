@@ -1,0 +1,58 @@
+---
+# OpenTelemetry Instrumentation CR
+# Apply one of these per namespace where you want auto-instrumentation.
+# The OTel Operator must be installed on the spoke cluster.
+#
+# Usage:
+#   kubectl apply -f instrumentation-cr.yaml -n <your-namespace>
+#
+# This enables zero-code auto-instrumentation for:
+#   - .NET / ASP.NET Core
+#   - Java / Spring Boot
+#   - Node.js / Express
+#   - Python / FastAPI, Flask, Django
+#   - Go (limited, requires manual init for some frameworks)
+#
+# Traces are sent to spoke-alloy (OTLP HTTP on port 4318) which forwards to hub Tempo.
+
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: auto-instrumentation
+  namespace: <YOUR_NAMESPACE>   # replace with the target namespace
+spec:
+  # Points to the spoke Alloy OTLP HTTP endpoint (in-cluster)
+  # Replace "spoke-alloy" with the actual service name if different.
+  exporter:
+    endpoint: http://spoke-alloy.monitoring.svc.cluster.local:4318
+
+  propagators:
+    - tracecontext
+    - baggage
+
+  sampler:
+    type: parentbased_traceidratio
+    argument: "1.0"   # 100% sampling — reduce for high-traffic services
+
+  resource:
+    attributes:
+      # These resource attributes appear in Tempo and Grafana
+      cluster: spoke-1              # replace with your cluster name
+      namespace: <YOUR_NAMESPACE>   # replace with the target namespace
+
+  # ── Language-specific settings ────────────────────────────────────────────
+
+  dotnet:
+    env:
+      - name: OTEL_DOTNET_AUTO_LOGS_INCLUDE_FORMATTED_MESSAGE
+        value: "true"
+    logLevel: Information
+
+  java: {}   # no extra config needed for most Spring Boot apps
+
+  nodejs: {}
+
+  python:
+    env:
+      - name: OTEL_PYTHON_LOG_CORRELATION
+        value: "true"

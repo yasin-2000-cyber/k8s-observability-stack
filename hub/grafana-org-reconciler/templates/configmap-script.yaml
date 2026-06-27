@@ -1,0 +1,226 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-org-reconciler-script
+  namespace: monitoring
+data:
+  reconcile.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    GRAFANA_URL="{{ .Values.grafanaUrl }}"
+    MIMIR_URL="{{ .Values.mimirUrl }}"
+    GRAFANA_AUTH="${GRAFANA_ADMIN_USER}:${GRAFANA_ADMIN_PASS}"
+
+    # Dashboards cloned into per-namespace orgs (everything else stays in main org only)
+    ALLOWED_CLONE_UIDS="dynamic-explorer k8s-container loki-overview"
+    # Dashboards to actively remove from per-namespace orgs if present
+    DISALLOWED_UIDS="k8s-nodes-hub k8s-pods-hub k8s-cluster-overview node-exporter-full"
+
+    # ── Helpers ──────────────────────────────────────────────────────────────────
+
+    gapi() {
+      local method="$1" path="$2" body="${3:-}"
+      if [[ -n "$body" ]]; then
+        curl -sf -X "$method" -u "$GRAFANA_AUTH" \
+          -H "Content-Type: application/json" -d "$body" "${GRAFANA_URL}${path}"
+      else
+        curl -sf -X "$method" -u "$GRAFANA_AUTH" "${GRAFANA_URL}${path}"
+      fi
+    }
+
+    gapi_org() {
+      local org_id="$1" method="$2" path="$3" body="${4:-}"
+      if [[ -n "$body" ]]; then
+        curl -sf -X "$method" -u "$GRAFANA_AUTH" \
+          -H "Content-Type: application/json" \
+          -H "X-Grafana-Org-Id: ${org_id}" \
+          -d "$body" "${GRAFANA_URL}${path}"
+      else
+        curl -sf -X "$method" -u "$GRAFANA_AUTH" \
+          -H "X-Grafana-Org-Id: ${org_id}" "${GRAFANA_URL}${path}"
+      fi
+    }
+
+    # ensure_org <org_name> → prints orgId
+    ensure_org() {
+      local org_name="$1"
+      local encoded_name
+      encoded_name=$(printf '%s' "$org_name" | jq -sRr @uri)
+
+      local existing
+      existing=$(gapi GET "/api/orgs/name/${encoded_name}" 2>/dev/null || echo '{}')
+
+      if echo "$existing" | jq -e '.id' > /dev/null 2>&1; then
+        echo "$existing" | jq -r '.id'
+        return
+      fi
+
+      local result
+      result=$(gapi POST "/api/orgs" "$(jq -n --arg name "$org_name" '{name: $name}')")
+      echo "$result" | jq -r '.orgId'
+    }
+
+    # ensure_datasource <org_id> <uid> <name> <type> <url> <tenant_header_value>
+    ensure_datasource() {
+      local org_id="$1" uid="$2" ds_name="$3" ds_type="$4" ds_url="$5" hval="$6"
+
+      local is_default="false"
+      [[ "$uid" == "mimir" ]] && is_default="true"
+
+      local body
+      body=$(jq -n \
+        --arg uid "$uid" \
+        --arg name "$ds_name" \
+        --arg type "$ds_type" \
+        --arg url "$ds_url" \
+        --arg hval "$hval" \
+        --argjson isDefault "$is_default" \
+        '{
+          uid: $uid, name: $name, type: $type, url: $url,
+          access: "proxy", isDefault: $isDefault,
+          jsonData: { httpHeaderName1: "X-Scope-OrgID" },
+          secureJsonData: { httpHeaderValue1: $hval }
+        }')
+
+      if [[ "$ds_type" == "prometheus" ]]; then
+        body=$(echo "$body" | jq '.jsonData.httpMethod = "POST"')
+      fi
+
+      if [[ "$ds_type" == "loki" ]]; then
+        body=$(echo "$body" | jq '.jsonData.derivedFields = [{
+          datasourceUid: "tempo",
+          matcherRegex: "\"(?:trace_id|TraceId|@tr)\":\\s*\"([a-f0-9]{32})\"",
+          name: "TraceID",
+          url: "${__value.raw}",
+          urlDisplayLabel: "View Trace in Tempo"
+        }]')
+      fi
+
+      if [[ "$ds_type" == "tempo" ]]; then
+        body=$(echo "$body" | jq '
+          .jsonData.tracesToLogsV2 = {
+            datasourceUid: "loki",
+            filterByTraceID: true, filterBySpanID: false, customQuery: false,
+            spanStartTimeShift: "-1m", spanEndTimeShift: "1m",
+            tags: [
+              {key: "k8s.namespace.name", value: "namespace"},
+              {key: "k8s.pod.name",       value: "pod"},
+              {key: "service.name",       value: "app"}
+            ]
+          } |
+          .jsonData.serviceMap = {datasourceUid: "mimir"} |
+          .jsonData.nodeGraph  = {enabled: true}
+        ')
+      fi
+
+      local existing_id
+      existing_id=$(gapi_org "$org_id" GET "/api/datasources/uid/${uid}" 2>/dev/null \
+        | jq -r '.id // empty' || true)
+
+      if [[ -n "$existing_id" ]]; then
+        gapi_org "$org_id" PUT "/api/datasources/${existing_id}" "$body" > /dev/null
+      else
+        gapi_org "$org_id" POST "/api/datasources" "$body" > /dev/null
+      fi
+    }
+
+    # clone_dashboards_from_org1 <target_org_id>
+    clone_dashboards_from_org1() {
+      local target_org_id="$1"
+
+      local uids
+      uids=$(gapi_org 1 GET "/api/search?type=dash-db&limit=500" | jq -r '.[].uid')
+
+      while IFS= read -r uid; do
+        [[ -z "$uid" ]] && continue
+
+        if ! echo "$ALLOWED_CLONE_UIDS" | grep -qw "$uid"; then
+          continue
+        fi
+
+        local import_body
+        import_body=$(gapi_org 1 GET "/api/dashboards/uid/${uid}" | jq '
+          .dashboard |= (del(.id) | .version = 1) |
+          {dashboard: .dashboard, overwrite: true, folderId: 0}
+        ')
+
+        gapi_org "$target_org_id" POST "/api/dashboards/import" "$import_body" > /dev/null || true
+      done <<< "$uids"
+    }
+
+    # cleanup_org_dashboards <org_id>
+    cleanup_org_dashboards() {
+      local org_id="$1"
+
+      for uid in $DISALLOWED_UIDS; do
+        local exists
+        exists=$(gapi_org "$org_id" GET "/api/dashboards/uid/${uid}" 2>/dev/null \
+          | jq -r '.dashboard.id // empty' || true)
+        if [[ -n "$exists" ]]; then
+          gapi_org "$org_id" DELETE "/api/dashboards/uid/${uid}" > /dev/null || true
+        fi
+      done
+    }
+
+    # reconcile_cluster <cluster_name> <newline_separated_namespaces>
+    reconcile_cluster() {
+      local cluster="$1"
+      local namespaces="$2"
+
+      while IFS= read -r ns; do
+        [[ -z "$ns" ]] && continue
+
+        local org_name="${cluster}-${ns}"
+        echo "[reconcile] ensuring org: ${org_name}"
+
+        local org_id
+        org_id=$(ensure_org "$org_name")
+
+        ensure_datasource "$org_id" "mimir" "Mimir" "prometheus" \
+          "http://mimir-nginx.monitoring.svc.cluster.local:80/prometheus" \
+          "${cluster}"
+
+        ensure_datasource "$org_id" "loki" "Loki" "loki" \
+          "http://loki-gateway.monitoring.svc.cluster.local:80" \
+          "${cluster}-${ns}"
+
+        ensure_datasource "$org_id" "tempo" "Tempo" "tempo" \
+          "http://tempo.monitoring.svc.cluster.local:3200" \
+          "${cluster}"
+
+        # Mimir Hub datasource — always queries the hub cluster tenant for span metrics
+        ensure_datasource "$org_id" "mimir-hub" "Mimir Hub" "prometheus" \
+          "http://mimir-nginx.monitoring.svc.cluster.local:80/prometheus" \
+          "{{ .Values.hubCluster }}"
+
+        clone_dashboards_from_org1 "$org_id"
+        cleanup_org_dashboards "$org_id"
+
+        echo "[reconcile] done: ${org_name} (orgId=${org_id})"
+      done <<< "$namespaces"
+    }
+
+    # ── Main ─────────────────────────────────────────────────────────────────────
+
+    echo "[reconcile] starting grafana org reconciler"
+
+    # ── Hub cluster: namespaces discovered via kubectl (in-cluster service account)
+    echo "[reconcile] discovering {{ .Values.hubCluster }} namespaces via kubectl"
+    hub_namespaces=$(kubectl get namespaces \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+    reconcile_cluster "{{ .Values.hubCluster }}" "$hub_namespaces"
+
+    # ── Spoke clusters: namespaces discovered via Mimir label values
+    # No cross-cluster kubeconfig needed — each spoke's namespaces appear as
+    # label values in Mimir under the spoke's tenant ID.
+    {{- range .Values.spokeClusters }}
+    echo "[reconcile] discovering {{ . }} namespaces via Mimir"
+    spoke_namespaces=$(curl -sf \
+      -H "X-Scope-OrgID: {{ . }}" \
+      "${MIMIR_URL}/prometheus/api/v1/label/namespace/values" \
+      | jq -r '.data[]')
+    reconcile_cluster "{{ . }}" "$spoke_namespaces"
+    {{- end }}
+
+    echo "[reconcile] finished"

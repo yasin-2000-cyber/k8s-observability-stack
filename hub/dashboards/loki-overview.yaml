@@ -1,0 +1,136 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-loki-overview
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "Logs"
+data:
+  loki-overview.json: |
+    {
+      "title": "Loki Log Overview",
+      "uid": "loki-overview",
+      "schemaVersion": 38,
+      "version": 1,
+      "refresh": "1m",
+      "time": {"from": "now-1h", "to": "now"},
+      "timezone": "browser",
+      "tags": ["loki", "logs"],
+      "templating": {
+        "list": [
+          {
+            "name": "cluster",
+            "label": "Cluster",
+            "type": "query",
+            "datasource": {"type": "loki", "uid": "loki"},
+            "query": "label_values(cluster)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".+",
+            "sort": 1
+          },
+          {
+            "name": "namespace",
+            "label": "Namespace",
+            "type": "query",
+            "datasource": {"type": "loki", "uid": "loki"},
+            "query": "label_values({cluster=~\"$cluster\"}, namespace)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".+",
+            "sort": 1
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Log Lines / sec",
+          "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "fieldConfig": {"defaults": {"unit": "ops"}},
+          "targets": [{"expr": "sum(rate({cluster=~\"$cluster\",namespace=~\"$namespace\"}[5m]))", "refId": "A"}]
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Error Lines / sec",
+          "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 0.01}]}
+            }
+          },
+          "targets": [{"expr": "sum(rate({cluster=~\"$cluster\",namespace=~\"$namespace\"} |= \"error\" [5m]))", "refId": "A"}]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Log Volume by Namespace",
+          "description": "Log ingestion rate per namespace — helps identify chatty services",
+          "gridPos": {"x": 0, "y": 4, "w": 24, "h": 8},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "fieldConfig": {"defaults": {"unit": "ops", "min": 0}},
+          "targets": [{
+            "expr": "sum by (namespace) (rate({cluster=~\"$cluster\",namespace=~\"$namespace\"}[5m]))",
+            "legendFormat": "{{namespace}}",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "Error Log Rate by Namespace",
+          "description": "Rate of log lines containing 'error' — spikes may indicate application failures",
+          "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "fieldConfig": {"defaults": {"unit": "ops", "min": 0}},
+          "targets": [{
+            "expr": "sum by (namespace) (rate({cluster=~\"$cluster\",namespace=~\"$namespace\"} |= \"error\" [5m]))",
+            "legendFormat": "{{namespace}}",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 5,
+          "type": "timeseries",
+          "title": "Warning Log Rate by Namespace",
+          "description": "Rate of log lines containing 'warn' — leading indicator of errors",
+          "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "fieldConfig": {"defaults": {"unit": "ops", "min": 0}},
+          "targets": [{
+            "expr": "sum by (namespace) (rate({cluster=~\"$cluster\",namespace=~\"$namespace\"} |= \"warn\" [5m]))",
+            "legendFormat": "{{namespace}}",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 6,
+          "type": "logs",
+          "title": "Recent Errors",
+          "description": "Last error-level log lines across selected namespaces",
+          "gridPos": {"x": 0, "y": 20, "w": 24, "h": 10},
+          "datasource": {"type": "loki", "uid": "loki"},
+          "options": {
+            "dedupStrategy": "none",
+            "showTime": true,
+            "showLabels": true,
+            "showCommonLabels": false,
+            "wrapLogMessage": true,
+            "sortOrder": "Descending"
+          },
+          "targets": [{
+            "expr": "{cluster=~\"$cluster\",namespace=~\"$namespace\"} |= \"error\"",
+            "refId": "A"
+          }]
+        }
+      ]
+    }

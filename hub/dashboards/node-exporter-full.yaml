@@ -1,0 +1,235 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-node-exporter-full
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "Infrastructure"
+data:
+  node-exporter-full.json: |
+    {
+      "title": "Node Exporter Full",
+      "uid": "node-exporter-full",
+      "schemaVersion": 38,
+      "version": 2,
+      "refresh": "1m",
+      "time": {"from": "now-1h", "to": "now"},
+      "timezone": "browser",
+      "tags": ["node", "infrastructure"],
+      "templating": {
+        "list": [
+          {
+            "name": "cluster",
+            "label": "Cluster",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "query": "label_values(node_uname_info{job=\"node-exporter\"}, cluster)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".*",
+            "sort": 1
+          },
+          {
+            "name": "node",
+            "label": "Node",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "query": "label_values(node_uname_info{cluster=~\"$cluster\"}, node)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".*",
+            "sort": 1
+          },
+          {
+            "name": "device",
+            "label": "Disk Device",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "query": "label_values(node_disk_io_time_seconds_total{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\"}, device)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".*",
+            "sort": 1
+          },
+          {
+            "name": "netif",
+            "label": "Network Interface",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "query": "label_values(node_network_info{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\",device!~\"lo|veth.*|docker.*|flannel.*|cali.*|cbr.*\"}, device)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".*",
+            "sort": 1
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "CPU Cores",
+          "gridPos": {"x": 0, "y": 0, "w": 3, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {"defaults": {"unit": "short"}},
+          "targets": [{"expr": "count(node_cpu_seconds_total{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\",mode=\"idle\"})", "legendFormat": "", "refId": "A"}]
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Memory Total",
+          "gridPos": {"x": 3, "y": 0, "w": 3, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {"defaults": {"unit": "bytes"}},
+          "targets": [{"expr": "sum(node_memory_MemTotal_bytes{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\"})", "legendFormat": "", "refId": "A"}]
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "CPU Usage",
+          "gridPos": {"x": 6, "y": 0, "w": 3, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.75}, {"color": "red", "value": 0.9}]}
+            }
+          },
+          "targets": [{"expr": "1 - avg(rate(node_cpu_seconds_total{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\",mode=\"idle\"}[5m]))", "legendFormat": "", "refId": "A"}]
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Memory Usage",
+          "gridPos": {"x": 9, "y": 0, "w": 3, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.80}, {"color": "red", "value": 0.90}]}
+            }
+          },
+          "targets": [{"expr": "1 - avg(node_memory_MemAvailable_bytes{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\"} / node_memory_MemTotal_bytes{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\"})", "legendFormat": "", "refId": "A"}]
+        },
+        {
+          "id": 5,
+          "type": "stat",
+          "title": "Load Average (1m)",
+          "gridPos": {"x": 12, "y": 0, "w": 3, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {"defaults": {"unit": "short"}},
+          "targets": [{"expr": "avg(node_load1{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\"})", "legendFormat": "", "refId": "A"}]
+        },
+        {
+          "id": 6,
+          "type": "stat",
+          "title": "System Uptime",
+          "gridPos": {"x": 15, "y": 0, "w": 3, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {"defaults": {"unit": "s"}},
+          "targets": [{"expr": "avg(time() - node_boot_time_seconds{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\"})", "legendFormat": "", "refId": "A"}]
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "CPU Usage by Mode",
+          "description": "Breakdown of CPU time by mode — idle time removed to show actual usage",
+          "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"unit": "percentunit", "min": 0, "max": 1, "custom": {"fillOpacity": 10, "stacking": {"mode": "normal"}}}
+          },
+          "options": {"tooltip": {"mode": "multi"}},
+          "targets": [
+            {"expr": "avg by (mode) (rate(node_cpu_seconds_total{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\",mode!=\"idle\"}[5m]))", "legendFormat": "{{mode}}", "refId": "A"}
+          ]
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "System Load Average",
+          "description": "1m / 5m / 15m load averages — compare against CPU core count",
+          "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {"defaults": {"unit": "short", "min": 0}},
+          "targets": [
+            {"expr": "avg(node_load1{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\"})", "legendFormat": "1m", "refId": "A"},
+            {"expr": "avg(node_load5{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\"})", "legendFormat": "5m", "refId": "B"},
+            {"expr": "avg(node_load15{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\"})", "legendFormat": "15m", "refId": "C"}
+          ]
+        },
+        {
+          "id": 9,
+          "type": "timeseries",
+          "title": "Memory Usage",
+          "description": "Memory breakdown: total, used, available, cached, buffers",
+          "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {"defaults": {"unit": "bytes", "min": 0}},
+          "targets": [
+            {"expr": "avg(node_memory_MemTotal_bytes{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\"})", "legendFormat": "Total", "refId": "A"},
+            {"expr": "avg(node_memory_MemTotal_bytes{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\"} - node_memory_MemAvailable_bytes{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\"})", "legendFormat": "Used", "refId": "B"},
+            {"expr": "avg(node_memory_MemAvailable_bytes{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\"})", "legendFormat": "Available", "refId": "C"},
+            {"expr": "avg(node_memory_Cached_bytes{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\"})", "legendFormat": "Cached", "refId": "D"},
+            {"expr": "avg(node_memory_Buffers_bytes{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\"})", "legendFormat": "Buffers", "refId": "E"}
+          ]
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "Disk I/O",
+          "description": "Disk read/write throughput in bytes/sec for selected devices",
+          "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"unit": "Bps", "min": 0},
+            "overrides": [{"matcher": {"id": "byRegexp", "options": "write.*"}, "properties": [{"id": "custom.transform", "value": "negative-Y"}]}]
+          },
+          "targets": [
+            {"expr": "sum by (device) (rate(node_disk_read_bytes_total{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\",device=~\"$device\"}[5m]))", "legendFormat": "read {{device}}", "refId": "A"},
+            {"expr": "sum by (device) (rate(node_disk_written_bytes_total{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\",device=~\"$device\"}[5m]))", "legendFormat": "write {{device}}", "refId": "B"}
+          ]
+        },
+        {
+          "id": 11,
+          "type": "timeseries",
+          "title": "Disk Space Usage",
+          "description": "Fraction of filesystem space used per mountpoint (tmpfs/overlay excluded)",
+          "gridPos": {"x": 0, "y": 20, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit", "min": 0, "max": 1,
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.70}, {"color": "red", "value": 0.85}]}
+            }
+          },
+          "targets": [{
+            "expr": "1 - node_filesystem_avail_bytes{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\",fstype!~\"tmpfs|overlay\"} / node_filesystem_size_bytes{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\",fstype!~\"tmpfs|overlay\"}",
+            "legendFormat": "{{node}} {{mountpoint}}",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 12,
+          "type": "timeseries",
+          "title": "Network Traffic",
+          "description": "Network receive (+) and transmit (-) bytes/sec per interface",
+          "gridPos": {"x": 12, "y": 20, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"unit": "Bps", "min": null},
+            "overrides": [{"matcher": {"id": "byRegexp", "options": "tx.*"}, "properties": [{"id": "custom.transform", "value": "negative-Y"}]}]
+          },
+          "targets": [
+            {"expr": "sum by (device) (rate(node_network_receive_bytes_total{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\",device=~\"$netif\"}[5m]))", "legendFormat": "rx {{device}}", "refId": "A"},
+            {"expr": "sum by (device) (rate(node_network_transmit_bytes_total{job=\"node-exporter\",cluster=~\"$cluster\",node=~\"$node\",device=~\"$netif\"}[5m]))", "legendFormat": "tx {{device}}", "refId": "B"}
+          ]
+        }
+      ]
+    }

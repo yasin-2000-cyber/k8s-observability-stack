@@ -1,0 +1,5 @@
+apiVersion: v2
+name: grafana-monthly-reporter
+description: Monthly per-namespace infrastructure report — queries Mimir/Loki, renders HTML email, delivers via SMTP
+type: application
+version: 0.1.0

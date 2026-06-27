@@ -1,0 +1,5 @@
+apiVersion: v2
+name: grafana-org-reconciler
+description: CronJob that creates per-namespace Grafana orgs with correct datasources and clones approved dashboards
+type: application
+version: 0.1.0

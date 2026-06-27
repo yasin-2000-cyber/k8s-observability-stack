@@ -1,0 +1,205 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-k8s-cluster-overview
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "Infrastructure"
+data:
+  k8s-cluster-overview.json: |
+    {
+      "title": "Kubernetes Cluster Overview",
+      "uid": "k8s-cluster-overview",
+      "schemaVersion": 38,
+      "version": 2,
+      "refresh": "1m",
+      "time": {"from": "now-1h", "to": "now"},
+      "timezone": "browser",
+      "tags": ["kubernetes", "cluster", "overview"],
+      "templating": {
+        "list": [
+          {
+            "name": "cluster",
+            "label": "Cluster",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "query": "label_values(kube_node_info{job=\"kube-state-metrics\"}, cluster)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".*",
+            "sort": 1
+          },
+          {
+            "name": "namespace",
+            "label": "Namespace",
+            "type": "query",
+            "datasource": {"type": "loki", "uid": "loki"},
+            "query": "label_values({cluster=~\"$cluster\"}, namespace)",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".*",
+            "sort": 1
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Nodes",
+          "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {"steps": [{"color": "green", "value": null}]}
+            }
+          },
+          "targets": [{"expr": "count(kube_node_info{job=\"kube-state-metrics\",cluster=~\"$cluster\"})", "legendFormat": "", "refId": "A"}]
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Running Pods",
+          "gridPos": {"x": 4, "y": 0, "w": 4, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {"steps": [{"color": "green", "value": null}]}
+            }
+          },
+          "targets": [{"expr": "sum(kube_pod_status_phase{job=\"kube-state-metrics\",cluster=~\"$cluster\",phase=\"Running\"})", "legendFormat": "", "refId": "A"}]
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Failing Pods",
+          "gridPos": {"x": 8, "y": 0, "w": 4, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}
+            }
+          },
+          "targets": [{"expr": "sum(kube_pod_container_status_waiting_reason{job=\"kube-state-metrics\",cluster=~\"$cluster\",reason=~\"CrashLoopBackOff|ImagePullBackOff|ErrImagePull\"})", "legendFormat": "", "refId": "A"}]
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Namespaces",
+          "gridPos": {"x": 12, "y": 0, "w": 4, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {"defaults": {"unit": "short"}},
+          "targets": [{"expr": "count(count by (namespace) (kube_pod_info{job=\"kube-state-metrics\",cluster=~\"$cluster\"}))", "legendFormat": "", "refId": "A"}]
+        },
+        {
+          "id": 5,
+          "type": "stat",
+          "title": "OOMKilled (last 1h)",
+          "gridPos": {"x": 16, "y": 0, "w": 4, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1}]}
+            }
+          },
+          "targets": [{"expr": "sum(kube_pod_container_status_last_terminated_reason{job=\"kube-state-metrics\",cluster=~\"$cluster\",reason=\"OOMKilled\"})", "legendFormat": "", "refId": "A"}]
+        },
+        {
+          "id": 6,
+          "type": "stat",
+          "title": "Pending Pods",
+          "gridPos": {"x": 20, "y": 0, "w": 4, "h": 4},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}]}
+            }
+          },
+          "targets": [{"expr": "sum(kube_pod_status_phase{job=\"kube-state-metrics\",cluster=~\"$cluster\",phase=\"Pending\"})", "legendFormat": "", "refId": "A"}]
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "Node CPU Usage",
+          "description": "CPU utilization per node (fraction of all cores busy) — from node-exporter idle time",
+          "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}},
+          "targets": [{
+            "expr": "1 - avg by (node) (rate(node_cpu_seconds_total{job=\"node-exporter\",mode=\"idle\",cluster=~\"$cluster\"}[5m]))",
+            "legendFormat": "{{node}}",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Node Memory Usage",
+          "description": "Memory utilization per node (fraction of total RAM in use) — from node-exporter",
+          "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}},
+          "targets": [{
+            "expr": "1 - avg by (node) (node_memory_MemAvailable_bytes{job=\"node-exporter\",cluster=~\"$cluster\"} / node_memory_MemTotal_bytes{job=\"node-exporter\",cluster=~\"$cluster\"})",
+            "legendFormat": "{{node}}",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 9,
+          "type": "timeseries",
+          "title": "Pod Restart Rate by Namespace",
+          "description": "Container restart rate over 5m window — spikes indicate crash loops",
+          "gridPos": {"x": 0, "y": 12, "w": 24, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {"defaults": {"unit": "short", "min": 0}},
+          "targets": [{
+            "expr": "sum by (namespace) (rate(kube_pod_container_status_restarts_total{job=\"kube-state-metrics\",cluster=~\"$cluster\",namespace=~\"$namespace\"}[5m])) > 0",
+            "legendFormat": "{{namespace}}",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 10,
+          "type": "table",
+          "title": "Top CPU Containers",
+          "description": "Top 10 containers by CPU usage (cores/sec)",
+          "gridPos": {"x": 0, "y": 20, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "options": {"sortBy": [{"displayName": "Value", "desc": true}]},
+          "targets": [{
+            "expr": "topk(10, sum by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{job=\"cadvisor\",container!=\"\",container!=\"POD\",cluster=~\"$cluster\",namespace=~\"$namespace\"}[5m])))",
+            "legendFormat": "{{namespace}}/{{pod}}/{{container}}",
+            "instant": true,
+            "refId": "A"
+          }],
+          "transformations": [{"id": "labelsToFields", "options": {"mode": "columns"}}]
+        },
+        {
+          "id": 11,
+          "type": "table",
+          "title": "Top Memory Containers",
+          "description": "Top 10 containers by working-set memory (bytes)",
+          "gridPos": {"x": 12, "y": 20, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "options": {"sortBy": [{"displayName": "Value", "desc": true}]},
+          "fieldConfig": {"defaults": {"unit": "bytes"}},
+          "targets": [{
+            "expr": "topk(10, sum by (namespace, pod, container) (container_memory_working_set_bytes{job=\"cadvisor\",container!=\"\",container!=\"POD\",cluster=~\"$cluster\",namespace=~\"$namespace\"}))",
+            "legendFormat": "{{namespace}}/{{pod}}/{{container}}",
+            "instant": true,
+            "refId": "A"
+          }],
+          "transformations": [{"id": "labelsToFields", "options": {"mode": "columns"}}]
+        }
+      ]
+    }

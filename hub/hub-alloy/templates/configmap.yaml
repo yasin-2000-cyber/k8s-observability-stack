@@ -1,0 +1,375 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hub-alloy-config
+  namespace: monitoring
+data:
+  config.alloy: |
+    // -----------------------------------------------------------------------
+    // Hub cluster self-monitoring
+    // Stamps all signals with cluster="{{ .Values.cluster }}" + datacenter="{{ .Values.datacenter }}"
+    // -----------------------------------------------------------------------
+
+    // --- Node metrics (built-in unix exporter, one per DaemonSet pod) ---
+    prometheus.exporter.unix "node" {
+      procfs_path = "/host/proc"
+      sysfs_path  = "/host/sys"
+      rootfs_path = "/host/rootfs"
+
+      filesystem {
+        fs_types_exclude = "^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$"
+      }
+    }
+
+    // prometheus.exporter.unix targets carry a built-in job label that job_name cannot override.
+    // This relabel step forces job="node-exporter" before metrics reach cluster_labels.
+    prometheus.relabel "node_job" {
+      forward_to = [prometheus.relabel.cluster_labels.receiver]
+
+      rule {
+        target_label = "job"
+        replacement  = "node-exporter"
+      }
+    }
+
+    prometheus.scrape "node" {
+      targets         = prometheus.exporter.unix.node.targets
+      forward_to      = [prometheus.relabel.node_job.receiver]
+      job_name        = "node-exporter"
+      scrape_interval = "60s"
+    }
+
+    // --- Kubelet + cAdvisor metrics ---
+    discovery.kubernetes "nodes" {
+      role = "node"
+    }
+
+    discovery.relabel "kubelet" {
+      targets = discovery.kubernetes.nodes.targets
+
+      rule {
+        source_labels = ["__address__"]
+        regex         = "(.+)"
+        target_label  = "__address__"
+        replacement   = "$1:10250"
+      }
+    }
+
+    prometheus.scrape "kubelet" {
+      targets         = discovery.relabel.kubelet.output
+      scheme          = "https"
+      forward_to      = [prometheus.relabel.cluster_labels.receiver]
+      job_name        = "kubelet"
+      scrape_interval = "60s"
+
+      tls_config {
+        insecure_skip_verify = true
+      }
+
+      authorization {
+        type             = "Bearer"
+        credentials_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+      }
+    }
+
+    discovery.relabel "cadvisor" {
+      targets = discovery.kubernetes.nodes.targets
+
+      rule {
+        source_labels = ["__address__"]
+        regex         = "(.+)"
+        target_label  = "__address__"
+        replacement   = "$1:10250"
+      }
+      rule {
+        target_label = "__metrics_path__"
+        replacement  = "/metrics/cadvisor"
+      }
+    }
+
+    prometheus.scrape "cadvisor" {
+      targets         = discovery.relabel.cadvisor.output
+      scheme          = "https"
+      forward_to      = [prometheus.relabel.cluster_labels.receiver]
+      job_name        = "cadvisor"
+      scrape_interval = "60s"
+
+      tls_config {
+        insecure_skip_verify = true
+      }
+
+      authorization {
+        type             = "Bearer"
+        credentials_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+      }
+    }
+
+    // --- Pod annotation-based scraping ---
+    discovery.kubernetes "pods" {
+      role = "pod"
+    }
+
+    discovery.relabel "pod_scrape" {
+      targets = discovery.kubernetes.pods.targets
+
+      rule {
+        source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_scrape"]
+        action        = "keep"
+        regex         = "true"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_path"]
+        action        = "replace"
+        target_label  = "__metrics_path__"
+        regex         = "(.+)"
+      }
+      rule {
+        source_labels = ["__address__", "__meta_kubernetes_pod_annotation_prometheus_io_port"]
+        action        = "replace"
+        target_label  = "__address__"
+        regex         = "(.+?)(?::\\d+)?;(\\d+)"
+        replacement   = "$1:$2"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+        target_label  = "app"
+      }
+    }
+
+    prometheus.scrape "pods" {
+      targets         = discovery.relabel.pod_scrape.output
+      forward_to      = [prometheus.relabel.cluster_labels.receiver]
+      job_name        = "pod-scrape"
+      scrape_interval = "60s"
+    }
+
+    // --- kube-state-metrics (kube_pod_*, kube_node_*, kube_namespace_*, etc.) ---
+    discovery.kubernetes "kube_state_metrics" {
+      role = "endpoints"
+      namespaces {
+        names = ["monitoring", "kube-system"]
+      }
+      selectors {
+        role  = "endpoints"
+        label = "app.kubernetes.io/name=kube-state-metrics"
+      }
+    }
+
+    prometheus.scrape "kube_state_metrics" {
+      targets         = discovery.kubernetes.kube_state_metrics.targets
+      forward_to      = [prometheus.relabel.global_metrics_labels.receiver]
+      job_name        = "kube-state-metrics"
+      scrape_interval = "60s"
+    }
+
+    // --- Stamp cluster + datacenter on cluster-global metrics (no node label) ---
+    // kube-state-metrics is scraped by every DaemonSet pod; adding node= would create
+    // N² time series (one per alloy pod × per k8s node) instead of N.
+    prometheus.relabel "global_metrics_labels" {
+      forward_to = [prometheus.remote_write.mimir.receiver]
+
+      rule {
+        target_label = "cluster"
+        replacement  = "{{ .Values.cluster }}"
+      }
+      rule {
+        target_label = "datacenter"
+        replacement  = "{{ .Values.datacenter }}"
+      }
+    }
+
+    // --- Stamp cluster + datacenter + node on per-node metrics ---
+    prometheus.relabel "cluster_labels" {
+      forward_to = [prometheus.remote_write.mimir.receiver]
+
+      rule {
+        target_label = "cluster"
+        replacement  = "{{ .Values.cluster }}"
+      }
+      rule {
+        target_label = "datacenter"
+        replacement  = "{{ .Values.datacenter }}"
+      }
+      rule {
+        target_label = "node"
+        replacement  = env("NODE_NAME")
+      }
+    }
+
+    // --- Remote write to local Mimir ---
+    prometheus.remote_write "mimir" {
+      endpoint {
+        url = "{{ .Values.mimir.url }}"
+
+        headers = {
+          "X-Scope-OrgID" = "{{ .Values.cluster }}",
+        }
+
+        queue_config {
+          max_samples_per_send = 10000
+          batch_send_deadline  = "5s"
+        }
+      }
+    }
+
+    // --- Receive Prometheus remote_write from Tempo metricsGenerator ---
+    // Tempo does not support headers in remoteWriteUrl; it writes here instead,
+    // and hub-alloy forwards to Mimir with the correct X-Scope-OrgID tenant header.
+    prometheus.receive_http "tempo_span_metrics" {
+      http {
+        listen_address = "0.0.0.0"
+        listen_port    = 19090
+      }
+      forward_to = [prometheus.relabel.tempo_labels.receiver]
+    }
+
+    // Rename k8s_namespace_name (sanitized from k8s.namespace.name OTel attribute) to
+    // namespace so dashboard $namespace variable filters RED metrics per-namespace org.
+    prometheus.relabel "tempo_labels" {
+      forward_to = [prometheus.remote_write.mimir.receiver]
+
+      rule {
+        source_labels = ["k8s_namespace_name"]
+        target_label  = "namespace"
+      }
+      rule {
+        action = "labeldrop"
+        regex  = "k8s_namespace_name"
+      }
+    }
+
+    // --- Pod log collection ---
+    discovery.relabel "pod_logs" {
+      targets = discovery.kubernetes.pods.targets
+
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+        target_label  = "app"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "tenant_id"
+        regex         = "(.+)"
+        replacement   = "{{ .Values.cluster }}-$1"
+      }
+    }
+
+    loki.source.kubernetes "pods" {
+      targets    = discovery.relabel.pod_logs.output
+      forward_to = [loki.relabel.cluster_labels.receiver]
+    }
+
+    loki.relabel "cluster_labels" {
+      forward_to = [loki.process.set_tenant.receiver, loki.process.set_tenant_master.receiver]
+
+      rule {
+        target_label = "cluster"
+        replacement  = "{{ .Values.cluster }}"
+      }
+      rule {
+        target_label = "datacenter"
+        replacement  = "{{ .Values.datacenter }}"
+      }
+    }
+
+    // Sets X-Scope-OrgID per log stream to "{cluster}-{namespace}" for hard per-namespace
+    // tenant isolation in Loki. stage.tenant overrides any header set in loki.write.
+    loki.process "set_tenant" {
+      // Extract trace_id from CLEF JSON output (Serilog 4 built-in writes "@tr").
+      // Also matches legacy "TraceId"/"trace_id" keys from other services.
+      stage.regex {
+        expression = `"(?:@tr|trace_id|TraceId)"\s*:\s*"(?P<trace_id>[a-f0-9]+)"`
+      }
+      stage.structured_metadata {
+        values = {
+          trace_id = "trace_id",
+        }
+      }
+      stage.tenant {
+        label = "tenant_id"
+      }
+      stage.label_drop {
+        values = ["tenant_id"]
+      }
+      forward_to = [loki.write.loki.receiver]
+    }
+
+    // Writes a copy of every log to the cluster-level master tenant for Org 1 visibility.
+    loki.process "set_tenant_master" {
+      stage.tenant {
+        value = "{{ .Values.cluster }}"
+      }
+      forward_to = [loki.write.loki.receiver]
+    }
+
+    loki.write "loki" {
+      endpoint {
+        url = "{{ .Values.loki.url }}"
+      }
+    }
+
+    // --- Receive OTLP traces and logs from auto-instrumented apps ---
+    otelcol.receiver.otlp "default" {
+      grpc { endpoint = "0.0.0.0:4317" }
+      http { endpoint = "0.0.0.0:4318" }
+      output {
+        traces = [otelcol.exporter.otlp.local_tempo.input]
+        logs   = [otelcol.exporter.loki.otlp_logs.input]
+      }
+    }
+
+    // Convert OTLP log records to Loki push format.
+    // trace_id is set as Loki structured metadata from OTel log context.
+    otelcol.exporter.loki "otlp_logs" {
+      forward_to = [loki.process.otlp_logs.receiver]
+    }
+
+    loki.process "otlp_logs" {
+      stage.static_labels {
+        values = {
+          cluster = "{{ .Values.cluster }}",
+        }
+      }
+      stage.tenant {
+        value = "{{ .Values.cluster }}"
+      }
+      forward_to = [loki.write.loki.receiver]
+    }
+
+    // --- Self-tracing: export Alloy's own spans to in-cluster Tempo ---
+    tracing {
+      sampling_fraction = 0.1
+      write_to          = [otelcol.exporter.otlp.local_tempo.input]
+    }
+
+    otelcol.exporter.otlp "local_tempo" {
+      client {
+        endpoint = "tempo.monitoring.svc.cluster.local:4317"
+        headers = {
+          "X-Scope-OrgID" = "{{ .Values.cluster }}",
+        }
+        tls {
+          insecure = true
+        }
+      }
+    }

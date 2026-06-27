@@ -1,0 +1,65 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: grafana-monthly-reporter
+  namespace: monitoring
+spec:
+  schedule: {{ .Values.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          serviceAccountName: grafana-monthly-reporter
+          restartPolicy: Never
+          containers:
+            - name: reporter
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command:
+                - sh
+                - -c
+                - pip install --quiet --no-cache-dir requests && python3 /scripts/report.py
+              env:
+                - name: GRAFANA_URL
+                  value: {{ .Values.grafana.url | quote }}
+                - name: GRAFANA_EXTERNAL_URL
+                  value: {{ .Values.grafana.externalUrl | quote }}
+                - name: MIMIR_URL
+                  value: {{ .Values.mimir.url | quote }}
+                - name: LOKI_URL
+                  value: {{ .Values.loki.url | quote }}
+                - name: SMTP_HOST
+                  value: {{ .Values.smtp.host | quote }}
+                - name: SMTP_PORT
+                  value: {{ .Values.smtp.port | quote }}
+                - name: SMTP_FROM
+                  value: {{ .Values.smtp.from | quote }}
+                - name: GRAFANA_ADMIN_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: grafana-admin-secret
+                      key: admin-user
+                - name: GRAFANA_ADMIN_PASS
+                  valueFrom:
+                    secretKeyRef:
+                      name: grafana-admin-secret
+                      key: admin-password
+                - name: SMTP_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: monitoring-alertmanager-credentials
+                      key: SMTP_PASSWORD
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+              resources:
+                {{- toYaml .Values.resources | nindent 16 }}
+          volumes:
+            - name: script
+              configMap:
+                name: grafana-monthly-reporter-script
+                defaultMode: 0755

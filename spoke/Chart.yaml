@@ -1,0 +1,9 @@
+apiVersion: v2
+name: spoke-monitoring
+description: Grafana Alloy DaemonSet for spoke clusters — collects metrics/logs/traces and forwards all signals to the hub
+type: application
+version: 0.1.0
+dependencies:
+  - name: alloy
+    version: "0.11.0"
+    repository: https://grafana.github.io/helm-charts

@@ -1,0 +1,110 @@
+# ── Persistence ───────────────────────────────────────────────────────────────
+persistence:
+  enabled: true
+  size: 2Gi
+  storageClass: "<YOUR_STORAGE_CLASS>"   # e.g. standard, gp2, longhorn
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# ── AlertManager config ───────────────────────────────────────────────────────
+# SMTP_PASSWORD is substituted at pod startup by the config-renderer init container.
+# Store the value in a Kubernetes Secret named monitoring-alertmanager-credentials
+# with key SMTP_PASSWORD:
+#   kubectl create secret generic monitoring-alertmanager-credentials -n monitoring \
+#     --from-literal=SMTP_PASSWORD=<your-smtp-password>
+config:
+  enabled: true
+  global:
+    resolve_timeout: 5m
+    smtp_from: "alerts@example.com"                  # replace with your sender address
+    smtp_smarthost: "smtp.office365.com:587"         # replace with your SMTP server
+    smtp_auth_username: "alerts@example.com"         # replace with your SMTP username
+    smtp_auth_password: ${SMTP_PASSWORD}
+    smtp_require_tls: true
+  route:
+    group_by: ["alertname", "cluster", "namespace"]
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+    receiver: "email-default"
+    routes:
+      - match:
+          severity: critical
+        receiver: "email-critical"
+        continue: true
+      - match:
+          severity: warning
+        receiver: "email-default"
+  receivers:
+    - name: "email-default"
+      email_configs:
+        - to: "admin@example.com,ops@example.com"   # replace with your alert recipients
+          send_resolved: true
+    - name: "email-critical"
+      email_configs:
+        - to: "admin@example.com,ops@example.com"
+          send_resolved: true
+  inhibit_rules:
+    - source_match:
+        severity: critical
+      target_match:
+        severity: warning
+      equal: ["alertname", "cluster", "namespace"]
+
+# ── Init container: substitute ${SMTP_PASSWORD} at startup ────────────────────
+extraInitContainers:
+  - name: config-renderer
+    image: busybox:1.36
+    command:
+      - sh
+      - -c
+      - >-
+        sed "s|\${SMTP_PASSWORD}|${SMTP_PASSWORD}|g"
+        /etc/alertmanager-src/alertmanager.yml
+        > /etc/alertmanager-rendered/alertmanager.yml
+    env:
+      - name: SMTP_PASSWORD
+        valueFrom:
+          secretKeyRef:
+            name: monitoring-alertmanager-credentials
+            key: SMTP_PASSWORD
+    volumeMounts:
+      - name: config
+        mountPath: /etc/alertmanager-src
+        readOnly: true
+      - name: alertmanager-rendered
+        mountPath: /etc/alertmanager-rendered
+
+extraVolumes:
+  - name: alertmanager-rendered
+    emptyDir: {}
+
+extraVolumeMounts:
+  - name: alertmanager-rendered
+    mountPath: /etc/alertmanager-rendered
+
+extraArgs:
+  config.file: /etc/alertmanager-rendered/alertmanager.yml
+
+# ── Ingress ───────────────────────────────────────────────────────────────────
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: hub-alertmanager.<YOUR_DOMAIN>
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: hub-alertmanager-tls
+      hosts:
+        - hub-alertmanager.<YOUR_DOMAIN>
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    external-dns.alpha.kubernetes.io/target: "<YOUR_EXTERNAL_IP>"

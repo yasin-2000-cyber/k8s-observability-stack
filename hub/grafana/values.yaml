@@ -1,0 +1,720 @@
+deploymentStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+replicas: 1
+
+podDisruptionBudget:
+  minAvailable: 1
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: grafana
+          topologyKey: kubernetes.io/hostname
+
+image:
+  pullPolicy: IfNotPresent
+
+# ── No PVC — PostgreSQL backend ───────────────────────────────────────────────
+persistence:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 1Gi
+  limits:
+    memory: 4Gi
+
+# ── Credentials — from a Kubernetes Secret ────────────────────────────────────
+# Create a Secret named monitoring-grafana-secret containing:
+#   AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID (for SSO)
+#   DB_HOST, DB_NAME, DB_USER, DB_PASSWORD (for PostgreSQL backend)
+# Example:
+#   kubectl create secret generic monitoring-grafana-secret -n monitoring \
+#     --from-literal=AZURE_CLIENT_ID=<your-client-id> \
+#     --from-literal=AZURE_CLIENT_SECRET=<your-client-secret> \
+#     --from-literal=AZURE_TENANT_ID=<your-tenant-id> \
+#     --from-literal=DB_HOST=<your-postgres-host> \
+#     --from-literal=DB_NAME=grafana \
+#     --from-literal=DB_USER=grafana \
+#     --from-literal=DB_PASSWORD=<your-db-password>
+envFromSecret: monitoring-grafana-secret
+
+# ── Grafana configuration ─────────────────────────────────────────────────────
+grafana.ini:
+  server:
+    domain: hub-grafana.<YOUR_DOMAIN>
+    root_url: https://hub-grafana.<YOUR_DOMAIN>
+    serve_from_sub_path: false
+
+  analytics:
+    reporting_enabled: false
+    check_for_updates: false
+
+  # PostgreSQL database backend — credentials from envFromSecret
+  database:
+    type: postgres
+    host: ${DB_HOST}
+    name: ${DB_NAME}
+    user: ${DB_USER}
+    password: ${DB_PASSWORD}
+    ssl_mode: disable
+
+  auth:
+    disable_login_form: false
+    oauth_auto_login: false
+
+  # Microsoft Azure AD SSO — credentials from envFromSecret
+  # Remove this section if you are not using Azure AD
+  auth.azuread:
+    name: Microsoft
+    enabled: true
+    allow_sign_up: true
+    auto_login: false
+    client_id: ${AZURE_CLIENT_ID}
+    client_secret: ${AZURE_CLIENT_SECRET}
+    scopes: openid email profile
+    auth_url: https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/authorize
+    token_url: https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token
+    allowed_domains: ""
+    # Restrict login to specific Azure AD group OIDs (comma-separated).
+    # Find group OIDs in Azure AD → Groups → your group → Object ID.
+    allowed_groups: "<AZURE_AD_GROUP_OID_1>,<AZURE_AD_GROUP_OID_2>"
+    role_attribute_path: ""
+    role_attribute_strict: false
+    allow_assign_grafana_admin: true
+    skip_org_role_sync: true
+
+  security:
+    admin_user: admin
+
+  explore:
+    enabled: true
+
+  users:
+    auto_assign_org: true
+    auto_assign_org_id: 1
+    auto_assign_org_role: Viewer
+    viewers_can_edit: false
+
+  unified_alerting:
+    enabled: true
+
+  dashboards:
+    versions_to_keep: 20
+
+# ── Admin credentials — from a manually-created Kubernetes Secret ─────────────
+# Run before deploying:
+#   kubectl create secret generic grafana-admin-secret -n monitoring \
+#     --from-literal=admin-user=admin \
+#     --from-literal=admin-password=<strong-random-password>
+admin:
+  existingSecret: grafana-admin-secret
+  userKey: admin-user
+  passwordKey: admin-password
+
+# ── Pre-configured datasources ────────────────────────────────────────────────
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+
+      # Mimir — multi-tenant metrics
+      # Update httpHeaderValue1 to pipe-separate all your cluster tenant names
+      - name: Mimir
+        type: prometheus
+        uid: mimir
+        url: http://mimir-nginx.monitoring.svc.cluster.local:80/prometheus
+        isDefault: true
+        jsonData:
+          httpMethod: POST
+          httpHeaderName1: "X-Scope-OrgID"
+          manageAlerts: false
+        secureJsonData:
+          httpHeaderValue1: "hub|spoke-1|spoke-2"   # pipe-separated list of all cluster tenant names
+
+      # Loki — multi-tenant logs
+      - name: Loki
+        type: loki
+        uid: loki
+        url: http://loki-gateway.monitoring.svc.cluster.local:80
+        jsonData:
+          httpHeaderName1: "X-Scope-OrgID"
+          derivedFields:
+            - datasourceUid: tempo
+              matcherRegex: '"(?:@tr|trace_id|TraceId)":\s*"([a-f0-9]{32})"'
+              name: TraceID
+              url: "$${__value.raw}"
+              urlDisplayLabel: "View Trace in Tempo"
+            - datasourceUid: tempo
+              matcherRegex: 'traceId=([a-f0-9]{32})'
+              name: TraceID_plain
+              url: "$${__value.raw}"
+              urlDisplayLabel: "View Trace in Tempo"
+        secureJsonData:
+          httpHeaderValue1: "hub|spoke-1|spoke-2"   # pipe-separated list of all cluster tenant names
+
+      # Tempo — multi-tenant traces
+      - name: Tempo
+        type: tempo
+        uid: tempo
+        url: http://tempo.monitoring.svc.cluster.local:3200
+        jsonData:
+          httpHeaderName1: "X-Scope-OrgID"
+          tracesToLogsV2:
+            datasourceUid: loki
+            filterByTraceID: true
+            filterBySpanID: false
+            customQuery: false
+            spanStartTimeShift: "-1m"
+            spanEndTimeShift: "1m"
+            tags:
+              - key: k8s.namespace.name
+                value: namespace
+              - key: k8s.pod.name
+                value: pod
+              - key: service.name
+                value: app
+          serviceMap:
+            datasourceUid: mimir
+          nodeGraph:
+            enabled: true
+        secureJsonData:
+          httpHeaderValue1: "hub|spoke-1|spoke-2"   # pipe-separated list of all cluster tenant names
+
+      # Mimir Hub — span metrics from Tempo metricsGenerator (hub tenant only)
+      - name: Mimir Hub
+        type: prometheus
+        uid: mimir-hub
+        url: http://mimir-nginx.monitoring.svc.cluster.local:80/prometheus
+        jsonData:
+          httpMethod: POST
+          httpHeaderName1: "X-Scope-OrgID"
+        secureJsonData:
+          httpHeaderValue1: "hub"   # hub cluster tenant name
+
+      # Alertmanager — view/silence alerts + delivery for Grafana-managed alerts
+      - name: Alertmanager
+        type: alertmanager
+        uid: alertmanager
+        url: http://alertmanager-monitoring.monitoring.svc.cluster.local:9093
+        jsonData:
+          implementation: prometheus
+          handleGrafanaManagedAlerts: true
+
+# ── Dashboard sidecar — auto-loads ConfigMaps labeled grafana_dashboard=1 ─────
+sidecar:
+  dashboards:
+    enabled: true
+    label: grafana_dashboard
+    labelValue: "1"
+    folder: /var/lib/grafana/dashboards/hub
+    searchNamespace: ALL
+    folderAnnotation: grafana_folder
+    provider:
+      allowUiUpdates: true
+  datasources:
+    enabled: false
+
+# ── Alert Rules ───────────────────────────────────────────────────────────────
+alerting:
+  contactpoints.yaml:
+    apiVersion: 1
+    contactPoints:
+      - orgId: 1
+        name: alertmanager
+        receivers:
+          - uid: alertmanager-cp
+            type: prometheus-alertmanager
+            settings:
+              url: http://alertmanager-monitoring.monitoring.svc.cluster.local:9093
+
+  policies.yaml:
+    apiVersion: 1
+    policies:
+      - orgId: 1
+        receiver: alertmanager
+        group_by: [alertname, cluster, namespace]
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 4h
+
+  alert-rules.yaml:
+    apiVersion: 1
+    groups:
+
+      # ── K8s Node Health ──────────────────────────────────────────────────────
+      - orgId: 1
+        name: k8s-nodes
+        folder: Infrastructure
+        interval: 1m
+        rules:
+          - uid: k8s-node-cpu-high
+            title: "Node CPU High (>85%)"
+            condition: C
+            noDataState: NoData
+            execErrState: Error
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Node CPU above 85%"
+              description: "CPU usage exceeded 85% threshold — check node-level workloads"
+            data:
+              - refId: A
+                relativeTimeRange: {from: 600, to: 0}
+                datasourceUid: mimir
+                model:
+                  expr: '1 - avg by (node) (rate(node_cpu_seconds_total{mode="idle"}[5m]))'
+                  instant: false
+                  range: true
+                  refId: A
+              - refId: C
+                relativeTimeRange: {from: 0, to: 0}
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  refId: C
+                  expression: A
+                  conditions:
+                    - evaluator: {params: [0.85], type: gt}
+                      operator: {type: and}
+                      query: {params: [A]}
+                      reducer: {params: [], type: last}
+
+          - uid: k8s-node-mem-high
+            title: "Node Memory High (>90%)"
+            condition: C
+            noDataState: NoData
+            execErrState: Error
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Node memory above 90%"
+              description: "Memory usage exceeded 90% threshold — consider evicting or rescheduling pods"
+            data:
+              - refId: A
+                relativeTimeRange: {from: 600, to: 0}
+                datasourceUid: mimir
+                model:
+                  expr: '1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)'
+                  instant: false
+                  range: true
+                  refId: A
+              - refId: C
+                relativeTimeRange: {from: 0, to: 0}
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  refId: C
+                  expression: A
+                  conditions:
+                    - evaluator: {params: [0.90], type: gt}
+                      operator: {type: and}
+                      query: {params: [A]}
+                      reducer: {params: [], type: last}
+
+          - uid: k8s-node-disk-high
+            title: "Node Disk High (>80%)"
+            condition: C
+            noDataState: NoData
+            execErrState: Error
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Node disk above 80%"
+              description: "Disk usage exceeded 80% threshold — check mountpoint usage"
+            data:
+              - refId: A
+                relativeTimeRange: {from: 600, to: 0}
+                datasourceUid: mimir
+                model:
+                  expr: '1 - (node_filesystem_avail_bytes{fstype!="tmpfs",fstype!="overlay"} / node_filesystem_size_bytes{fstype!="tmpfs",fstype!="overlay"})'
+                  instant: false
+                  range: true
+                  refId: A
+              - refId: C
+                relativeTimeRange: {from: 0, to: 0}
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  refId: C
+                  expression: A
+                  conditions:
+                    - evaluator: {params: [0.80], type: gt}
+                      operator: {type: and}
+                      query: {params: [A]}
+                      reducer: {params: [], type: last}
+
+          - uid: k8s-node-not-ready
+            title: "Node Not Ready"
+            condition: C
+            noDataState: NoData
+            execErrState: Error
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Node Not Ready"
+              description: "A Kubernetes node has been NotReady for more than 2 minutes"
+            data:
+              - refId: A
+                relativeTimeRange: {from: 300, to: 0}
+                datasourceUid: mimir
+                model:
+                  expr: 'kube_node_status_condition{condition="Ready",status="true"} == 0'
+                  instant: false
+                  range: true
+                  refId: A
+              - refId: C
+                relativeTimeRange: {from: 0, to: 0}
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  refId: C
+                  expression: A
+                  conditions:
+                    - evaluator: {params: [0], type: gt}
+                      operator: {type: and}
+                      query: {params: [A]}
+                      reducer: {params: [], type: last}
+
+      # ── K8s Pod Health ───────────────────────────────────────────────────────
+      - orgId: 1
+        name: k8s-pods
+        folder: Infrastructure
+        interval: 1m
+        rules:
+          - uid: k8s-pod-crashloop
+            title: "Pod CrashLoopBackOff"
+            condition: C
+            noDataState: NoData
+            execErrState: Error
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pod CrashLoopBackOff"
+              description: "A container has been in CrashLoopBackOff for more than 5 minutes"
+            data:
+              - refId: A
+                relativeTimeRange: {from: 600, to: 0}
+                datasourceUid: mimir
+                model:
+                  expr: 'kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"}'
+                  instant: false
+                  range: true
+                  refId: A
+              - refId: C
+                relativeTimeRange: {from: 0, to: 0}
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  refId: C
+                  expression: A
+                  conditions:
+                    - evaluator: {params: [0], type: gt}
+                      operator: {type: and}
+                      query: {params: [A]}
+                      reducer: {params: [], type: last}
+
+          - uid: k8s-pod-oom
+            title: "Pod OOMKilled"
+            condition: C
+            noDataState: NoData
+            execErrState: Error
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: 'Pod OOMKilled: {{ "{{" }} $labels.pod {{ "}}" }} ({{ "{{" }} $labels.namespace {{ "}}" }})'
+              description: 'Cluster: {{ "{{" }} $labels.cluster {{ "}}" }} | Namespace: {{ "{{" }} $labels.namespace {{ "}}" }} | Pod: {{ "{{" }} $labels.pod {{ "}}" }} — Container was killed due to out-of-memory. Increase memory limits or check for memory leaks.'
+            data:
+              - refId: A
+                relativeTimeRange: {from: 300, to: 0}
+                datasourceUid: mimir
+                model:
+                  expr: 'kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}'
+                  instant: false
+                  range: true
+                  refId: A
+              - refId: C
+                relativeTimeRange: {from: 0, to: 0}
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  refId: C
+                  expression: A
+                  conditions:
+                    - evaluator: {params: [0], type: gt}
+                      operator: {type: and}
+                      query: {params: [A]}
+                      reducer: {params: [], type: last}
+
+          - uid: k8s-pod-pending
+            title: "Pod Pending Too Long (>5m)"
+            condition: C
+            noDataState: NoData
+            execErrState: Error
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Pod Pending Too Long"
+              description: "A pod has been in Pending state for more than 5 minutes"
+            data:
+              - refId: A
+                relativeTimeRange: {from: 600, to: 0}
+                datasourceUid: mimir
+                model:
+                  expr: 'kube_pod_status_phase{phase="Pending"}'
+                  instant: false
+                  range: true
+                  refId: A
+              - refId: C
+                relativeTimeRange: {from: 0, to: 0}
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  refId: C
+                  expression: A
+                  conditions:
+                    - evaluator: {params: [0], type: gt}
+                      operator: {type: and}
+                      query: {params: [A]}
+                      reducer: {params: [], type: last}
+
+          - uid: k8s-pod-imagepull
+            title: "Pod Image Pull Error"
+            condition: C
+            noDataState: NoData
+            execErrState: Error
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: 'Pod Image Pull Error: {{ "{{" }} $labels.pod {{ "}}" }} ({{ "{{" }} $labels.namespace {{ "}}" }})'
+              description: 'Cluster: {{ "{{" }} $labels.cluster {{ "}}" }} | Pod: {{ "{{" }} $labels.pod {{ "}}" }} — Check image name/tag and registry credentials.'
+            data:
+              - refId: A
+                relativeTimeRange: {from: 300, to: 0}
+                datasourceUid: mimir
+                model:
+                  expr: 'kube_pod_container_status_waiting_reason{reason=~"ImagePullBackOff|ErrImagePull"}'
+                  instant: false
+                  range: true
+                  refId: A
+              - refId: C
+                relativeTimeRange: {from: 0, to: 0}
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  refId: C
+                  expression: A
+                  conditions:
+                    - evaluator: {params: [0], type: gt}
+                      operator: {type: and}
+                      query: {params: [A]}
+                      reducer: {params: [], type: last}
+
+      # ── Monitoring Stack Self-Health ─────────────────────────────────────────
+      - orgId: 1
+        name: monitoring-stack
+        folder: Infrastructure
+        interval: 1m
+        rules:
+          - uid: mimir-down
+            title: "Mimir Down"
+            condition: C
+            noDataState: Alerting
+            execErrState: Alerting
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Mimir Down"
+              description: "Mimir scrape target has been unreachable for more than 2 minutes"
+            data:
+              - refId: A
+                relativeTimeRange: {from: 300, to: 0}
+                datasourceUid: mimir
+                model:
+                  expr: 'up{job=~"mimir.*"} == 0'
+                  instant: false
+                  range: true
+                  refId: A
+              - refId: C
+                relativeTimeRange: {from: 0, to: 0}
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  refId: C
+                  expression: A
+                  conditions:
+                    - evaluator: {params: [0], type: gt}
+                      operator: {type: and}
+                      query: {params: [A]}
+                      reducer: {params: [], type: last}
+
+          - uid: loki-down
+            title: "Loki Down"
+            condition: C
+            noDataState: Alerting
+            execErrState: Alerting
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Loki Down"
+              description: "Loki scrape target has been unreachable for more than 2 minutes"
+            data:
+              - refId: A
+                relativeTimeRange: {from: 300, to: 0}
+                datasourceUid: mimir
+                model:
+                  expr: 'up{job=~"loki.*"} == 0'
+                  instant: false
+                  range: true
+                  refId: A
+              - refId: C
+                relativeTimeRange: {from: 0, to: 0}
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  refId: C
+                  expression: A
+                  conditions:
+                    - evaluator: {params: [0], type: gt}
+                      operator: {type: and}
+                      query: {params: [A]}
+                      reducer: {params: [], type: last}
+
+          - uid: tempo-down
+            title: "Tempo Down"
+            condition: C
+            noDataState: Alerting
+            execErrState: Alerting
+            for: 2m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Tempo Down"
+              description: "Tempo scrape target has been unreachable for more than 2 minutes"
+            data:
+              - refId: A
+                relativeTimeRange: {from: 300, to: 0}
+                datasourceUid: mimir
+                model:
+                  expr: 'up{job=~"tempo.*"} == 0'
+                  instant: false
+                  range: true
+                  refId: A
+              - refId: C
+                relativeTimeRange: {from: 0, to: 0}
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  refId: C
+                  expression: A
+                  conditions:
+                    - evaluator: {params: [0], type: gt}
+                      operator: {type: and}
+                      query: {params: [A]}
+                      reducer: {params: [], type: last}
+
+      # ── Alloy Collector Health ───────────────────────────────────────────────
+      - orgId: 1
+        name: alloy-health
+        folder: Infrastructure
+        interval: 1m
+        rules:
+          - uid: hub-alloy-absent
+            title: "hub-alloy Scrape Missing"
+            condition: C
+            noDataState: Alerting
+            execErrState: Alerting
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "hub-alloy metrics have disappeared"
+              description: "No scrape data from hub-alloy for 5 minutes — check DaemonSet on hub cluster"
+            data:
+              - refId: A
+                relativeTimeRange: {from: 600, to: 0}
+                datasourceUid: mimir
+                model:
+                  expr: 'absent(up{job="hub-alloy"})'
+                  instant: false
+                  range: true
+                  refId: A
+              - refId: C
+                relativeTimeRange: {from: 0, to: 0}
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  refId: C
+                  expression: A
+                  conditions:
+                    - evaluator: {params: [0], type: gt}
+                      operator: {type: and}
+                      query: {params: [A]}
+                      reducer: {params: [], type: last}
+
+          # Add one entry per spoke cluster — update the job name to match your spoke Alloy deployment
+          - uid: spoke-alloy-absent
+            title: "spoke-alloy Scrape Missing"
+            condition: C
+            noDataState: Alerting
+            execErrState: Alerting
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "spoke-alloy metrics have disappeared"
+              description: "No scrape data from spoke-alloy for 5 minutes — check DaemonSet on spoke cluster"
+            data:
+              - refId: A
+                relativeTimeRange: {from: 600, to: 0}
+                datasourceUid: mimir
+                model:
+                  expr: 'absent(up{job="spoke-alloy"})'   # update job name to match your deployment
+                  instant: false
+                  range: true
+                  refId: A
+              - refId: C
+                relativeTimeRange: {from: 0, to: 0}
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  refId: C
+                  expression: A
+                  conditions:
+                    - evaluator: {params: [0], type: gt}
+                      operator: {type: and}
+                      query: {params: [A]}
+                      reducer: {params: [], type: last}
+
+# ── Ingress ───────────────────────────────────────────────────────────────────
+ingress:
+  enabled: true
+  ingressClassName: nginx
+  hosts:
+    - hub-grafana.<YOUR_DOMAIN>
+  tls:
+    - secretName: hub-grafana-tls
+      hosts:
+        - hub-grafana.<YOUR_DOMAIN>
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    external-dns.alpha.kubernetes.io/target: "<YOUR_EXTERNAL_IP>"

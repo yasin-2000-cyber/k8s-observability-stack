@@ -1,0 +1,32 @@
+schedule: "0 8 1 * *"   # 1st of every month at 08:00 UTC
+
+image:
+  repository: python
+  tag: "3.12-slim"
+  pullPolicy: IfNotPresent
+
+grafana:
+  url: "http://grafana.monitoring.svc.cluster.local:80"
+  externalUrl: "https://hub-grafana.<YOUR_DOMAIN>"   # public URL shown in email footer
+
+mimir:
+  url: "http://mimir-nginx.monitoring.svc.cluster.local:80"
+
+loki:
+  url: "http://loki-gateway.monitoring.svc.cluster.local:80"
+
+smtp:
+  host: "smtp.office365.com"   # replace with your SMTP server
+  port: "587"
+  from: "alerts@example.com"   # replace with your sender address
+
+# SMTP_PASSWORD is read from grafana-admin-secret (key: SMTP_PASSWORD)
+# and GRAFANA credentials from grafana-admin-secret (keys: admin-user, admin-password).
+# Ensure these secrets exist before deploying.
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 256Mi

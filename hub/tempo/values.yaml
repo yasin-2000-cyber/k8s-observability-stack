@@ -1,0 +1,96 @@
+# ── Credentials — inject from a Kubernetes Secret ────────────────────────────
+# Create a Secret named monitoring-tempo-s3 with keys:
+#   S3_ACCESS_KEY, S3_SECRET_KEY, S3_ENDPOINT
+# Example:
+#   kubectl create secret generic monitoring-tempo-s3 -n monitoring \
+#     --from-literal=S3_ENDPOINT=<YOUR_S3_ENDPOINT> \
+#     --from-literal=S3_ACCESS_KEY=<YOUR_ACCESS_KEY> \
+#     --from-literal=S3_SECRET_KEY=<YOUR_SECRET_KEY>
+
+tempo:
+  multitenancyEnabled: true
+
+  # S3 storage — credentials from env vars
+  storage:
+    trace:
+      backend: s3
+      s3:
+        endpoint: ${S3_ENDPOINT}
+        region: us-east-1
+        access_key: ${S3_ACCESS_KEY}
+        secret_key: ${S3_SECRET_KEY}
+        bucket: tempo-traces   # rename to match your S3 bucket
+        forcepathstyle: true
+        insecure: false
+      wal:
+        path: /var/tempo/wal
+
+  # Accept OTLP from spoke Alloy agents (gRPC + HTTP)
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+  # Metrics generator — writes span RED metrics via hub-alloy
+  # hub-alloy exposes a Prometheus remote_write receiver on port 19090
+  # which forwards to Mimir with the correct X-Scope-OrgID tenant header.
+  metrics_generator:
+    storage:
+      path: /var/tempo/wal/generator
+      remote_write:
+        - url: "http://hub-alloy.monitoring.svc.cluster.local:19090/api/v1/push"
+    processor:
+      span_metrics:
+        dimensions:
+          - k8s.namespace.name
+
+  global_overrides:
+    metrics_generator_processors:
+      - service-graphs
+      - span-metrics
+
+  retention: 720h   # 30 days
+
+  extraArgs:
+    config.expand-env: "true"
+
+  extraEnvFrom:
+    - secretRef:
+        name: monitoring-tempo-s3
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+
+# ── No PVC — S3 backend ────────────────────────────────────────────────────────
+persistence:
+  enabled: false
+
+service:
+  type: ClusterIP
+  port: 3100
+
+# ── Main ingress (query API + OTLP HTTP) ──────────────────────────────────────
+ingress:
+  enabled: true
+  ingressClassName: nginx
+  hosts:
+    - host: hub-tempo.<YOUR_DOMAIN>
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: hub-tempo-tls
+      hosts:
+        - hub-tempo.<YOUR_DOMAIN>
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/proxy-body-size: "32m"
+    external-dns.alpha.kubernetes.io/target: "<YOUR_EXTERNAL_IP>"
