@@ -20,47 +20,6 @@ A production-grade, multi-tenant Kubernetes observability stack built on the [Gr
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    subgraph spoke["Spoke Cluster(s)"]
-        SA[spoke-alloy DaemonSet]
-        APP[Your Applications\nOTel auto-instrumented]
-        APP -->|OTLP traces + logs| SA
-        SA -->|node/pod/cAdvisor metrics| SA
-    end
-
-    subgraph hub["Hub Cluster"]
-        HA[hub-alloy DaemonSet]
-        MI[Mimir\nmetrics store]
-        LO[Loki\nlogs store]
-        TE[Tempo\ntrace store]
-        GR[Grafana\nmulti-org UI]
-        REC[Org Reconciler\nCronJob every 5m]
-        REP[Monthly Reporter\nCronJob 1st of month]
-        AM[Alertmanager]
-
-        HA --> MI
-        HA --> LO
-        GR --> MI
-        GR --> LO
-        GR --> TE
-        REC --> GR
-        REP --> MI
-        REP --> LO
-        REP -->|HTML email| SMTP[SMTP Server]
-        GR --> AM
-        AM -->|alert email| SMTP
-    end
-
-    SA -->|metrics remote_write\nX-Scope-OrgID: spoke| MI
-    SA -->|logs push\ntenant: spoke-namespace| LO
-    SA -->|OTLP traces\nX-Scope-OrgID: spoke| TE
-
-    TE -->|span RED metrics| HA
-
-    GR -->|per-namespace org\nauto-provisioned| USER[Team Members\nSee only their namespace]
-```
-
 ### Key design decisions
 
 | Decision | Why |
