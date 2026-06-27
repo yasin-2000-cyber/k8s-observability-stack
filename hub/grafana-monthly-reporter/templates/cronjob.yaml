@@ -53,6 +53,11 @@ spec:
                     secretKeyRef:
                       name: monitoring-alertmanager-credentials
                       key: SMTP_PASSWORD
+                - name: OPENAI_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: monthly-reporter-credentials
+                      key: OPENAI_API_KEY
               volumeMounts:
                 - name: script
                   mountPath: /scripts

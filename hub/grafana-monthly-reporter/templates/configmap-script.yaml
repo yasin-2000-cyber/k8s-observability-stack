@@ -6,63 +6,109 @@ metadata:
 data:
   report.py: |
     #!/usr/bin/env python3
-    """Monthly per-namespace infrastructure report — Mimir + Loki → HTML email via SMTP."""
+    """Monthly infrastructure report — agentic driver (OpenAI gpt-4o-mini + tool use)."""
     import base64
     import json
     import os
     import smtplib
     import sys
+    import time
     import urllib.parse
     import urllib.request
-    from calendar import monthrange
     from datetime import datetime, timezone
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
-    # ── Config from environment ────────────────────────────────────────────────
+    import requests
 
-    GRAFANA_URL      = os.environ["GRAFANA_URL"]
-    GRAFANA_EXT_URL  = os.environ["GRAFANA_EXTERNAL_URL"]
-    MIMIR_URL        = os.environ["MIMIR_URL"]
-    LOKI_URL         = os.environ["LOKI_URL"]
-    GRAFANA_USER     = os.environ["GRAFANA_ADMIN_USER"]
-    GRAFANA_PASS     = os.environ["GRAFANA_ADMIN_PASS"]
-    SMTP_HOST        = os.environ["SMTP_HOST"]
-    SMTP_PORT        = int(os.environ["SMTP_PORT"])
-    SMTP_FROM        = os.environ["SMTP_FROM"]
-    SMTP_PASS        = os.environ["SMTP_PASSWORD"]
+    # ── Config ──────────────────────────────────────────────────────────────────
 
-    # ── Time range: previous calendar month ───────────────────────────────────
+    GRAFANA_URL     = os.environ["GRAFANA_URL"]
+    GRAFANA_EXT_URL = os.environ["GRAFANA_EXTERNAL_URL"]
+    MIMIR_URL       = os.environ["MIMIR_URL"]
+    LOKI_URL        = os.environ["LOKI_URL"]
+    GRAFANA_USER    = os.environ["GRAFANA_ADMIN_USER"]
+    GRAFANA_PASS    = os.environ["GRAFANA_ADMIN_PASS"]
+    SMTP_HOST       = os.environ["SMTP_HOST"]
+    SMTP_PORT       = int(os.environ["SMTP_PORT"])
+    SMTP_FROM       = os.environ["SMTP_FROM"]
+    SMTP_PASS       = os.environ["SMTP_PASSWORD"]
+    OPENAI_API_KEY  = os.environ["OPENAI_API_KEY"]
 
-    now        = datetime.now(tz=timezone.utc)
-    first_this = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    last_month = first_this.replace(month=first_this.month - 1) if first_this.month > 1 \
-                 else first_this.replace(year=first_this.year - 1, month=12)
-    days_in_month = monthrange(last_month.year, last_month.month)[1]
-    MONTH_START  = int(last_month.timestamp())
-    MONTH_END    = int(first_this.timestamp())
-    DURATION_SEC = MONTH_END - MONTH_START
-    MONTH_LABEL  = last_month.strftime("%B %Y")
+    # Optional: cap namespace count for testing
+    TEST_NS_LIMIT = int(os.environ["TEST_NS_LIMIT"]) if os.environ.get("TEST_NS_LIMIT") else None
 
-    print(f"[reporter] reporting period: {MONTH_LABEL} ({days_in_month} days)")
+    # ── Time range ───────────────────────────────────────────────────────────────
+    # Override via TEST_PERIOD_START / TEST_PERIOD_END / TEST_PERIOD_LABEL for test jobs.
 
-    # ── HTTP helpers ──────────────────────────────────────────────────────────
+    if os.environ.get("TEST_PERIOD_START"):
+        MONTH_START = int(os.environ["TEST_PERIOD_START"])
+        MONTH_END   = int(os.environ["TEST_PERIOD_END"])
+        MONTH_LABEL = os.environ.get("TEST_PERIOD_LABEL", "Test Period")
+    else:
+        now         = datetime.now(tz=timezone.utc)
+        first_this  = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        last_month  = (first_this.replace(month=first_this.month - 1) if first_this.month > 1
+                       else first_this.replace(year=first_this.year - 1, month=12))
+        MONTH_START = int(last_month.timestamp())
+        MONTH_END   = int(first_this.timestamp())
+        MONTH_LABEL = last_month.strftime("%B %Y")
+
+    MONTH_DUR = MONTH_END - MONTH_START
+    print(f"[reporter] period: {MONTH_LABEL}  {MONTH_START} -> {MONTH_END}  ({MONTH_DUR}s)")
+
+    # ── Grafana HTTP helper ──────────────────────────────────────────────────────
 
     def _grafana_auth_header():
         creds = base64.b64encode(f"{GRAFANA_USER}:{GRAFANA_PASS}".encode()).decode()
         return {"Authorization": f"Basic {creds}"}
 
-    def grafana_get(path):
+    def _grafana_get(path):
         url = GRAFANA_URL + path
         req = urllib.request.Request(url, headers=_grafana_auth_header())
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read())
 
-    def mimir_query(promql, tenant):
-        """Instant query evaluated at MONTH_END."""
-        params = urllib.parse.urlencode({"query": promql, "time": MONTH_END})
-        url = f"{MIMIR_URL}/prometheus/api/v1/query?{params}"
-        req = urllib.request.Request(url, headers={"X-Scope-OrgID": tenant})
+    # ── Recipient cache (set by list_all_grafana_users, used by send_report) ─────
+
+    _recipient_cache = []
+
+    # ── Tool implementations ─────────────────────────────────────────────────────
+
+    def tool_list_grafana_orgs(args):
+        orgs = _grafana_get("/api/orgs")
+        result = [{"id": o["id"], "name": o["name"]} for o in orgs if o["id"] != 1]
+        if TEST_NS_LIMIT:
+            result = result[:TEST_NS_LIMIT]
+            print(f"  [test] namespace list capped to {TEST_NS_LIMIT}")
+        return result
+
+    def tool_list_all_grafana_users(args):
+        global _recipient_cache
+        emails = []
+        page = 1
+        while True:
+            users = _grafana_get(f"/api/users?perpage=1000&page={page}")
+            if not users:
+                break
+            for u in users:
+                email = u.get("email", "")
+                if "@" in email and "." in email.split("@")[-1]:
+                    emails.append(email)
+            if len(users) < 1000:
+                break
+            page += 1
+        _recipient_cache = sorted(set(emails))
+        print(f"  [users] {len(_recipient_cache)} recipients found")
+        return _recipient_cache
+
+    def tool_query_mimir(args):
+        promql  = args["promql"]
+        cluster = args["cluster"]
+        end     = args["end"]
+        params  = urllib.parse.urlencode({"query": promql, "time": end})
+        url     = f"{MIMIR_URL}/prometheus/api/v1/query?{params}"
+        req     = urllib.request.Request(url, headers={"X-Scope-OrgID": cluster})
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 data = json.loads(r.read())
@@ -70,31 +116,16 @@ data:
             if results:
                 return float(results[0]["value"][1])
         except Exception as e:
-            print(f"  [warn] mimir query failed: {e}")
+            print(f"  [warn] mimir: {e}")
         return None
 
-    def mimir_query_range(promql, tenant, step=3600):
-        """Range query over the full month, returns list of (timestamp, value)."""
-        params = urllib.parse.urlencode({
-            "query": promql, "start": MONTH_START, "end": MONTH_END, "step": step,
-        })
-        url = f"{MIMIR_URL}/prometheus/api/v1/query_range?{params}"
-        req = urllib.request.Request(url, headers={"X-Scope-OrgID": tenant})
-        try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                data = json.loads(r.read())
-            results = data.get("data", {}).get("result", [])
-            if results:
-                return [(float(v[0]), float(v[1])) for v in results[0]["values"]]
-        except Exception as e:
-            print(f"  [warn] mimir range query failed: {e}")
-        return []
-
-    def loki_query(logql, tenant):
-        """Instant aggregate query evaluated at MONTH_END."""
-        params = urllib.parse.urlencode({"query": logql, "time": MONTH_END, "limit": "1"})
-        url = f"{LOKI_URL}/loki/api/v1/query?{params}"
-        req = urllib.request.Request(url, headers={"X-Scope-OrgID": tenant})
+    def tool_query_loki(args):
+        logql  = args["logql"]
+        tenant = args["tenant"]
+        end    = args["end"]
+        params = urllib.parse.urlencode({"query": logql, "time": end, "limit": "1"})
+        url    = f"{LOKI_URL}/loki/api/v1/query?{params}"
+        req    = urllib.request.Request(url, headers={"X-Scope-OrgID": tenant})
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 data = json.loads(r.read())
@@ -102,212 +133,16 @@ data:
             if results:
                 return float(results[0]["value"][1])
         except Exception as e:
-            print(f"  [warn] loki query failed: {e}")
+            print(f"  [warn] loki: {e}")
         return None
 
-    # ── Metric collection ─────────────────────────────────────────────────────
-
-    def collect_metrics(cluster, ns):
-        dur = str(DURATION_SEC) + "s"
-        tenant_metrics = cluster
-        tenant_logs = cluster + "-" + ns
-        lsel       = '{namespace="' + ns + '"}'
-        err_lsel   = '{namespace="' + ns + '",status_code="STATUS_CODE_ERROR"}'
-        ctr_lsel   = '{namespace="' + ns + '",container!=""}'
-
-        print(f"  collecting RED metrics ...")
-        total_calls = mimir_query(
-            'sum(increase(traces_spanmetrics_calls_total' + lsel + '[' + dur + ']))',
-            tenant_metrics,
-        )
-        total_errors = mimir_query(
-            'sum(increase(traces_spanmetrics_calls_total' + err_lsel + '[' + dur + ']))',
-            tenant_metrics,
-        )
-        avg_rps = mimir_query(
-            'avg_over_time(sum(rate(traces_spanmetrics_calls_total' + lsel + '[5m]))[' + dur + ':5m])',
-            tenant_metrics,
-        )
-        p95_latency_ms = mimir_query(
-            'histogram_quantile(0.95, sum(rate(traces_spanmetrics_duration_seconds_bucket' + lsel + '[' + dur + '])) by (le)) * 1000',
-            tenant_metrics,
-        )
-
-        error_rate_pct = None
-        if total_calls and total_errors is not None and total_calls > 0:
-            error_rate_pct = (total_errors / total_calls) * 100
-
-        print(f"  collecting resource metrics ...")
-        avg_cpu_cores = mimir_query(
-            'avg_over_time(sum(rate(container_cpu_usage_seconds_total' + ctr_lsel + '[5m]))[' + dur + ':5m])',
-            tenant_metrics,
-        )
-        peak_cpu_cores = mimir_query(
-            'max_over_time(sum(rate(container_cpu_usage_seconds_total' + ctr_lsel + '[5m]))[' + dur + ':5m])',
-            tenant_metrics,
-        )
-        avg_ram_gb = mimir_query(
-            'avg_over_time(sum(container_memory_working_set_bytes' + ctr_lsel + ')[' + dur + ':5m]) / 1073741824',
-            tenant_metrics,
-        )
-        peak_ram_gb = mimir_query(
-            'max_over_time(sum(container_memory_working_set_bytes' + ctr_lsel + ')[' + dur + ':5m]) / 1073741824',
-            tenant_metrics,
-        )
-
-        print(f"  finding peak activity ...")
-        rps_series = mimir_query_range(
-            'sum(rate(traces_spanmetrics_calls_total' + lsel + '[5m]))',
-            tenant_metrics,
-        )
-        peak_ts, peak_rps = None, None
-        if rps_series:
-            peak_ts, peak_rps = max(rps_series, key=lambda x: x[1])
-            peak_ts = datetime.fromtimestamp(peak_ts, tz=timezone.utc).strftime("%d %b %Y %H:%M UTC")
-
-        print(f"  collecting log metrics ...")
-        log_lines = loki_query(
-            'sum(count_over_time(' + lsel + '[' + dur + ']))',
-            tenant_logs,
-        )
-        log_gb = loki_query(
-            'sum(bytes_over_time(' + lsel + '[' + dur + '])) / 1073741824',
-            tenant_logs,
-        )
-
-        return {
-            "total_requests":  total_calls,
-            "total_errors":    total_errors,
-            "avg_rps":         avg_rps,
-            "error_rate_pct":  error_rate_pct,
-            "p95_latency_ms":  p95_latency_ms,
-            "avg_cpu_cores":   avg_cpu_cores,
-            "peak_cpu_cores":  peak_cpu_cores,
-            "avg_ram_gb":      avg_ram_gb,
-            "peak_ram_gb":     peak_ram_gb,
-            "peak_activity_time": peak_ts,
-            "peak_rps":        peak_rps,
-            "log_lines":       log_lines,
-            "log_gb":          log_gb,
-        }
-
-    # ── HTML rendering ────────────────────────────────────────────────────────
-
-    def _fmt(value, fmt, unit="", none_text="—"):
-        if value is None:
-            return none_text
-        return f"{value:{fmt}}{unit}"
-
-    def _status_color(error_rate_pct):
-        if error_rate_pct is None:
-            return "#888888", "Unknown"
-        if error_rate_pct < 1:
-            return "#27ae60", "Healthy"
-        if error_rate_pct < 5:
-            return "#f39c12", "Warning"
-        return "#e74c3c", "Critical"
-
-    def render_html(cluster, ns, m):
-        status_color, status_label = _status_color(m["error_rate_pct"])
-        org_name = f"{cluster}-{ns}"
-        grafana_link = f"{GRAFANA_EXT_URL}/dashboards"
-
-        def row(label, value, highlight=False):
-            bg = "#f9f9f9" if highlight else "#ffffff"
-            return f"""
-            <tr style="background:{bg};">
-              <td style="padding:10px 16px;color:#444;font-size:14px;">{label}</td>
-              <td style="padding:10px 16px;font-weight:600;font-size:14px;text-align:right;color:#1a3a5c;">{value}</td>
-            </tr>"""
-
-        def section(title, rows_html):
-            return f"""
-            <tr><td style="padding:24px 32px 0;">
-              <div style="font-size:11px;font-weight:700;text-transform:uppercase;
-                          letter-spacing:.08em;color:#888;border-bottom:1px solid #e8e8e8;
-                          padding-bottom:8px;margin-bottom:4px;">{title}</div>
-              <table style="width:100%;border-collapse:collapse;">{rows_html}</table>
-            </td></tr>"""
-
-        red_rows = (
-            row("Average Requests / sec",  _fmt(m["avg_rps"], ".2f", " req/s"))
-          + row("Total Requests (month)",   _fmt(m["total_requests"], ",.0f"), highlight=True)
-          + row("Total Errors",             _fmt(m["total_errors"], ",.0f"))
-          + row("Error Rate",               _fmt(m["error_rate_pct"], ".2f", "%"), highlight=True)
-          + row("p95 Latency",              _fmt(m["p95_latency_ms"], ".0f", " ms"))
-        )
-
-        resource_rows = (
-            row("Average CPU",   _fmt(m["avg_cpu_cores"], ".3f", " cores"))
-          + row("Peak CPU",      _fmt(m["peak_cpu_cores"], ".3f", " cores"), highlight=True)
-          + row("Average RAM",   _fmt(m["avg_ram_gb"], ".2f", " GB"))
-          + row("Peak RAM",      _fmt(m["peak_ram_gb"], ".2f", " GB"), highlight=True)
-        )
-
-        activity_rows = (
-            row("Peak Activity",     m["peak_activity_time"] or "—")
-          + row("Peak RPS at peak",  _fmt(m["peak_rps"], ".2f", " req/s"), highlight=True)
-          + row("Total Log Lines",   _fmt(m["log_lines"], ",.0f"))
-          + row("Log Volume",        _fmt(m["log_gb"], ".3f", " GB"), highlight=True)
-        )
-
-        return f"""<!DOCTYPE html>
-    <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-    <body style="margin:0;padding:24px;background:#f0f2f5;font-family:Arial,Helvetica,sans-serif;">
-    <table style="max-width:680px;margin:0 auto;background:#ffffff;border-radius:6px;
-                  box-shadow:0 1px 4px rgba(0,0,0,.12);border-collapse:collapse;width:100%;">
-
-      <!-- Header -->
-      <tr>
-        <td style="background:#1a3a5c;padding:28px 32px;border-radius:6px 6px 0 0;">
-          <div style="color:#ffffff;font-size:20px;font-weight:700;">Monthly Infrastructure Report</div>
-          <div style="color:#a8c4e0;font-size:13px;margin-top:6px;">{org_name} &nbsp;·&nbsp; {MONTH_LABEL}</div>
-        </td>
-      </tr>
-
-      <!-- Status badge -->
-      <tr>
-        <td style="padding:16px 32px;background:#f7f9fb;border-bottom:1px solid #e8e8e8;">
-          <span style="display:inline-block;background:{status_color};color:#fff;
-                       font-size:12px;font-weight:700;padding:4px 12px;border-radius:12px;
-                       text-transform:uppercase;letter-spacing:.06em;">{status_label}</span>
-          <span style="font-size:13px;color:#666;margin-left:12px;">
-            Based on error rate for {MONTH_LABEL}
-          </span>
-        </td>
-      </tr>
-
-      {section("Traffic &amp; Errors", red_rows)}
-      {section("Resource Usage", resource_rows)}
-      {section("Activity &amp; Observability", activity_rows)}
-
-      <tr><td style="padding:8px;"></td></tr>
-
-      <!-- Footer -->
-      <tr>
-        <td style="background:#f7f9fb;padding:16px 32px;border-top:1px solid #e8e8e8;
-                   border-radius:0 0 6px 6px;">
-          <table style="width:100%;border-collapse:collapse;">
-            <tr>
-              <td style="font-size:12px;color:#888;">
-                Generated {datetime.now(tz=timezone.utc).strftime("%d %b %Y %H:%M UTC")}
-                &nbsp;·&nbsp; Platform Team
-              </td>
-              <td style="text-align:right;">
-                <a href="{grafana_link}" style="font-size:12px;color:#1a3a5c;
-                   text-decoration:none;font-weight:600;">Open in Grafana →</a>
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-
-    </table>
-    </body></html>"""
-
-    # ── Email sending ─────────────────────────────────────────────────────────
-
-    def send_email(to_addrs, subject, html_body):
+    def tool_send_report(args):
+        subject   = args["subject"]
+        html_body = args["html_body"]
+        to_addrs  = _recipient_cache
+        if not to_addrs:
+            print("[reporter] no recipients — aborting")
+            sys.exit(1)
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"]    = SMTP_FROM
@@ -317,72 +152,183 @@ data:
             s.ehlo()
             s.starttls()
             s.login(SMTP_FROM, SMTP_PASS)
-            s.sendmail(SMTP_FROM, to_addrs, msg.as_string())
+            failed = s.sendmail(SMTP_FROM, to_addrs, msg.as_string())
+        if failed:
+            print(f"  [warn] partial delivery failure: {failed}")
+        print(f"[reporter] report sent to {len(to_addrs)} recipients")
+        sys.exit(0)
 
-    # ── Main ──────────────────────────────────────────────────────────────────
+    TOOL_DISPATCH = {
+        "list_grafana_orgs":      tool_list_grafana_orgs,
+        "list_all_grafana_users": tool_list_all_grafana_users,
+        "query_mimir":            tool_query_mimir,
+        "query_loki":             tool_query_loki,
+        "send_report":            tool_send_report,
+    }
+
+    # ── OpenAI tool schema ────────────────────────────────────────────────────────
+
+    TOOLS = [
+        {
+            "type": "function",
+            "function": {
+                "name": "list_grafana_orgs",
+                "description": "List all Grafana organizations (id=1 already excluded). Returns [{id, name}].",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_all_grafana_users",
+                "description": "List all real Grafana user emails (admin@localhost already filtered). Returns [email].",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "query_mimir",
+                "description": "Run a PromQL instant query against Mimir. Returns float or null.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "promql":  {"type": "string", "description": "PromQL expression"},
+                        "cluster": {"type": "string", "description": "Tenant (cluster name, e.g. hub or spoke-1)"},
+                        "start":   {"type": "integer", "description": "Start Unix timestamp"},
+                        "end":     {"type": "integer", "description": "End Unix timestamp"},
+                    },
+                    "required": ["promql", "cluster", "start", "end"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "query_loki",
+                "description": "Run a LogQL metric query against Loki. Returns float or null.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "logql":  {"type": "string", "description": "LogQL expression"},
+                        "tenant": {"type": "string", "description": "Loki tenant e.g. hub-monitoring or spoke-1-myapp"},
+                        "start":  {"type": "integer", "description": "Start Unix timestamp"},
+                        "end":    {"type": "integer", "description": "End Unix timestamp"},
+                    },
+                    "required": ["logql", "tenant", "start", "end"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "send_report",
+                "description": "Send the final HTML report email to all Grafana users. Call as the LAST action.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "subject":   {"type": "string", "description": "Email subject line"},
+                        "html_body": {"type": "string", "description": "Full HTML email body"},
+                    },
+                    "required": ["subject", "html_body"],
+                },
+            },
+        },
+    ]
+
+    # ── Prompts ───────────────────────────────────────────────────────────────────
+
+    SYSTEM_PROMPT = (
+        "You are an infrastructure reporter. You have tools to query Prometheus (Mimir) "
+        "and Loki, and a tool to send an email report. "
+        "Always call send_report() as your final action."
+    )
+
+    USER_PROMPT = (
+        f"Generate the monthly infrastructure report for {MONTH_LABEL}.\n"
+        f"Reporting period: Unix {MONTH_START} to {MONTH_END} (duration: {MONTH_DUR}s).\n"
+        f"Grafana dashboard link for the footer: {GRAFANA_EXT_URL}/dashboards\n"
+        "\n"
+        "Steps:\n"
+        "1. Call list_grafana_orgs() — returns all namespace orgs already filtered.\n"
+        "2. Call list_all_grafana_users() — returns the recipient list.\n"
+        "3. For each org (name format: 'cluster-namespace'):\n"
+        "   - cluster prefix: the text before the first '-' in the org name\n"
+        "     (e.g. 'hub' for 'hub-monitoring', 'spoke-1' for 'spoke-1-myapp')\n"
+        "   - Query Mimir (X-Scope-OrgID = cluster) for these metrics using start/end from above:\n"
+        "     * Total requests: sum(increase(traces_spanmetrics_calls_total{namespace='NS'}[DURs]))\n"
+        "     * Total errors: sum(increase(traces_spanmetrics_calls_total{namespace='NS',status_code='STATUS_CODE_ERROR'}[DURs]))\n"
+        "     * p95 latency ms: histogram_quantile(0.95, sum by(le)(rate(traces_spanmetrics_duration_seconds_bucket{namespace='NS'}[DURs]))) * 1000\n"
+        "     * Avg CPU cores: avg_over_time(sum(rate(container_cpu_usage_seconds_total{container!='',namespace='NS'}[5m]))[DURs:5m])\n"
+        "     * Avg RAM GB: avg_over_time(sum(container_memory_working_set_bytes{container!='',namespace='NS'})[DURs:5m]) / 1073741824\n"
+        "   - Query Loki (tenant = 'cluster-namespace') for:\n"
+        "     * Log lines: sum(count_over_time({namespace='NS'}[DURs]))\n"
+        "     * Log GB: sum(bytes_over_time({namespace='NS'}[DURs])) / 1073741824\n"
+        f"   - Replace DUR with {MONTH_DUR}s and NS with the actual namespace name.\n"
+        "   - Skip namespaces where all queried metrics are null or zero.\n"
+        "4. Build ONE professional HTML email:\n"
+        "   - Dark blue header with report title and month\n"
+        "   - Summary table: all active namespaces, columns: Namespace, Req/s, Error%, p95ms, CPU, RAM\n"
+        "   - Per-namespace section: metrics table + status badge + 2-3 sentence analysis\n"
+        "   - Status: Healthy (<1% errors), Warning (1-5%), Critical (>5%), Unknown (no trace data)\n"
+        "   - Footer with generation timestamp and Grafana link\n"
+        "5. Call send_report(subject, html_body).\n"
+    )
+
+    # ── OpenAI agentic loop ───────────────────────────────────────────────────────
+
+    def openai_chat(messages):
+        """POST to OpenAI with retry on 429 — handles free-tier rate limits."""
+        for attempt in range(6):
+            resp = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                         "Content-Type": "application/json"},
+                json={"model": "gpt-4o-mini", "max_tokens": 8192,
+                      "tools": TOOLS, "messages": messages},
+                timeout=120,
+            ).json()
+            if "error" in resp and resp.get("error", {}).get("code") == "rate_limit_exceeded":
+                wait = 20 * (attempt + 1)
+                print(f"  [rate_limit] waiting {wait}s (attempt {attempt + 1})")
+                time.sleep(wait)
+                continue
+            if "error" in resp:
+                print(f"[reporter] OpenAI error: {resp['error']}")
+                sys.exit(1)
+            return resp
+        raise RuntimeError("OpenAI rate limit persists after retries")
 
     def main():
-        print(f"[reporter] starting monthly reporter for {MONTH_LABEL}")
+        print(f"[reporter] starting agentic reporter for {MONTH_LABEL}")
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": USER_PROMPT},
+        ]
+        iterations = 0
+        while iterations < 200:
+            iterations += 1
+            resp   = openai_chat(messages)
+            choice = resp["choices"][0]
+            msg    = choice["message"]
+            messages.append(msg)
 
-        orgs = grafana_get("/api/orgs")
-        sent = skipped = errors = 0
+            if choice["finish_reason"] == "stop":
+                print("[reporter] AI finished without calling send_report — exiting")
+                sys.exit(1)
 
-        for org in orgs:
-            if org["id"] == 1:
-                continue
+            for tc in msg.get("tool_calls", []):
+                fn_name = tc["function"]["name"]
+                fn_args = json.loads(tc["function"]["arguments"])
+                print(f"  [tool] {fn_name}({list(fn_args.keys())})")
+                result = TOOL_DISPATCH[fn_name](fn_args)
+                messages.append({
+                    "role":         "tool",
+                    "tool_call_id": tc["id"],
+                    "content":      json.dumps(result),
+                })
 
-            org_name = org["name"]
-            parts    = org_name.split("-", 1)
-            if len(parts) != 2:
-                print(f"[skip] unexpected org name format: {org_name}")
-                continue
-            cluster, ns = parts
-
-            print(f"\n[reporter] processing {org_name} (orgId={org['id']})")
-
-            try:
-                users = grafana_get(f"/api/orgs/{org['id']}/users")
-            except Exception as e:
-                print(f"  [warn] could not fetch users: {e}")
-                skipped += 1
-                continue
-
-            emails = [
-                u["email"] for u in users
-                if u.get("email")
-                and "@" in u["email"]
-                and "." in u["email"].split("@")[-1]
-            ]
-            if not emails:
-                print(f"  [skip] no email recipients in org")
-                skipped += 1
-                continue
-
-            try:
-                metrics = collect_metrics(cluster, ns)
-            except Exception as e:
-                print(f"  [error] metric collection failed: {e}")
-                errors += 1
-                continue
-
-            if (metrics["total_requests"] is None or metrics["total_requests"] == 0) \
-               and (metrics["log_lines"] is None or metrics["log_lines"] == 0):
-                print(f"  [skip] no activity recorded for {MONTH_LABEL}")
-                skipped += 1
-                continue
-
-            try:
-                html    = render_html(cluster, ns, metrics)
-                subject = f"Monthly Report — {org_name} — {MONTH_LABEL}"
-                send_email(emails, subject, html)
-                print(f"  [ok] sent to: {', '.join(emails)}")
-                sent += 1
-            except Exception as e:
-                print(f"  [error] failed to send email: {e}")
-                errors += 1
-
-        print(f"\n[reporter] done — sent={sent} skipped={skipped} errors={errors}")
-        if errors:
-            sys.exit(1)
+        print("[reporter] iteration limit reached — exiting")
+        sys.exit(1)
 
     main()

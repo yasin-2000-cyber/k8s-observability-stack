@@ -20,9 +20,10 @@ smtp:
   port: "587"
   from: "alerts@example.com"   # replace with your sender address
 
-# SMTP_PASSWORD is read from grafana-admin-secret (key: SMTP_PASSWORD)
-# and GRAFANA credentials from grafana-admin-secret (keys: admin-user, admin-password).
-# Ensure these secrets exist before deploying.
+# Required secrets (create before deploying):
+#   grafana-admin-secret          — keys: admin-user, admin-password
+#   monitoring-alertmanager-credentials — key: SMTP_PASSWORD
+#   monthly-reporter-credentials  — key: OPENAI_API_KEY
 
 resources:
   requests:

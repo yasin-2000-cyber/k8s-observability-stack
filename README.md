@@ -14,7 +14,7 @@ A production-grade, multi-tenant Kubernetes observability stack built on the [Gr
 - **One-click log ↔ trace correlation** — click any log line to jump to the full trace in Tempo; click any span to see matching logs
 - **7 pre-built dashboards** — cluster overview, nodes, pods, containers, node exporter, Loki logs, and a dynamic trace+log explorer
 - **Automated alerting** — Grafana unified alerting rules for node health, pod health, and monitoring stack self-health, delivered via email
-- **Monthly automated report** — a CronJob emails every namespace org a professional HTML report covering request rate, error rate, p95 latency, CPU/RAM usage, and log volume for the previous month
+- **AI-powered monthly report** — an agentic reporter (OpenAI gpt-4o-mini + tool calling) autonomously queries metrics and logs, writes an HTML report with per-namespace analysis, and emails it to every team on the 1st of each month
 
 ---
 
@@ -85,7 +85,7 @@ flowchart TD
 | OTel Operator | `open-telemetry/opentelemetry-operator` | ≥ 0.x | Auto-instrumentation CRDs for spoke apps |
 | hub-alloy | Custom (this repo) | 1.0.0 | Hub DaemonSet — scrapes hub cluster + receives spoke span metrics |
 | grafana-org-reconciler | Custom (this repo) | 0.1.0 | Creates per-namespace Grafana orgs every 5 minutes |
-| grafana-monthly-reporter | Custom (this repo) | 0.1.0 | Emails monthly HTML report to each org's users |
+| grafana-monthly-reporter | Custom (this repo) | 0.1.0 | AI-driven agentic reporter (gpt-4o-mini + tool calling) — emails monthly HTML report with narrative analysis to each org |
 | Dashboards | ConfigMaps (this repo) | — | 7 pre-built Grafana dashboards |
 
 ---
@@ -128,15 +128,18 @@ The **Org Reconciler** CronJob runs every 5 minutes and:
 
 ## Monthly Automated Report
 
-On the 1st of every month at 08:00 UTC, a Python CronJob queries Mimir and Loki for the previous calendar month and sends an HTML email to every user in each Grafana org.
+On the 1st of every month at 08:00 UTC, an AI-driven agentic reporter (OpenAI gpt-4o-mini with tool calling) queries Mimir and Loki for the previous calendar month and emails a professional HTML report to every user in every Grafana org.
+
+**How it works:** The LLM is given 5 tools — `list_grafana_orgs`, `list_all_grafana_users`, `query_mimir`, `query_loki`, and `send_report` — and an instruction prompt. It decides what to query for each namespace, interprets the results, writes the HTML, and delivers it. No templating, no hard-coded metric list: the agent drives the entire workflow.
 
 **What the report covers:**
-- Traffic: average req/s, total requests, total errors, error rate (%), p95 latency
-- Resources: average and peak CPU (cores), average and peak RAM (GB)
-- Activity: peak traffic timestamp and RPS, total log lines, log volume (GB)
-- Status badge: Healthy / Warning / Critical based on error rate
+- Traffic: total requests, total errors, error rate (%), p95 latency
+- Resources: average CPU (cores), average RAM (GB)
+- Logs: total log lines, log volume (GB)
+- Status badge: Healthy (<1% errors) / Warning (1–5%) / Critical (>5%) / Unknown (no trace data)
+- Per-namespace narrative: 2–3 sentence analysis written by the LLM
 
-**Extension point — AI analysis:** The current script performs deterministic metric aggregation. Adding an LLM step (e.g. using the OpenAI or Claude API) to generate a natural-language narrative summary of anomalies and trends is a straightforward extension — query the metrics, pass them as context to the LLM, and include the generated summary in the HTML body before sending.
+**Requirements:** An OpenAI API key stored in a Kubernetes secret (`monthly-reporter-credentials`, key `OPENAI_API_KEY`). Uses `gpt-4o-mini` — costs pennies per run for typical cluster sizes.
 
 ![Monthly Report Example](docs/images/monthly-report.png)
 
@@ -198,6 +201,9 @@ kubectl create secret generic monitoring-grafana-secret -n $NAMESPACE \
 
 kubectl create secret generic monitoring-alertmanager-credentials -n $NAMESPACE \
   --from-literal=SMTP_PASSWORD=<YOUR_SMTP_PASSWORD>
+
+kubectl create secret generic monthly-reporter-credentials -n $NAMESPACE \
+  --from-literal=OPENAI_API_KEY=<YOUR_OPENAI_API_KEY>
 
 # 2. Storage backends
 helm repo add grafana https://grafana.github.io/helm-charts && helm repo update
