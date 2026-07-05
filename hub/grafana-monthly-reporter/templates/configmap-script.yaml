@@ -35,8 +35,9 @@ data:
     SMTP_PASS       = os.environ["SMTP_PASSWORD"]
     OPENAI_API_KEY  = os.environ["OPENAI_API_KEY"]
 
-    # Optional: cap namespace count for testing
-    TEST_NS_LIMIT = int(os.environ["TEST_NS_LIMIT"]) if os.environ.get("TEST_NS_LIMIT") else None
+    # Optional: cap namespace count or filter by name for testing
+    TEST_NS_LIMIT  = int(os.environ["TEST_NS_LIMIT"]) if os.environ.get("TEST_NS_LIMIT") else None
+    TEST_NS_FILTER = os.environ.get("TEST_NS_FILTER")  # e.g. "babylai-dev" matches substring of org name
 
     # ── Time range ───────────────────────────────────────────────────────────────
     # Override via TEST_PERIOD_START / TEST_PERIOD_END / TEST_PERIOD_LABEL for test jobs.
@@ -78,7 +79,10 @@ data:
     def tool_list_grafana_orgs(args):
         orgs = _grafana_get("/api/orgs")
         result = [{"id": o["id"], "name": o["name"]} for o in orgs if o["id"] != 1]
-        if TEST_NS_LIMIT:
+        if TEST_NS_FILTER:
+            result = [o for o in result if TEST_NS_FILTER in o["name"]]
+            print(f"  [test] filtered to '{TEST_NS_FILTER}': {[o['name'] for o in result]}")
+        elif TEST_NS_LIMIT:
             result = result[:TEST_NS_LIMIT]
             print(f"  [test] namespace list capped to {TEST_NS_LIMIT}")
         return result
