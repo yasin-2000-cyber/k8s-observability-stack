@@ -1,0 +1,51 @@
+---
+# OpenTelemetry Instrumentation CR for apps running directly on the HUB cluster
+# (as opposed to a spoke cluster — see spoke/otel-instrumentation/ for that case).
+# Apply one of these per namespace where you want auto-instrumentation.
+# The OTel Operator must be installed on the hub cluster (see hub/otel-operator/).
+#
+# Usage:
+#   kubectl apply -f instrumentation-cr.yaml -n <your-namespace>
+#
+# Traces/logs are sent straight to hub-alloy (OTLP HTTP on port 4318), which is
+# already running in the monitoring namespace — no spoke-alloy hop needed since
+# the app is co-located with the hub collector.
+
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: auto-instrumentation
+  namespace: <YOUR_NAMESPACE>   # replace with the target namespace
+spec:
+  exporter:
+    endpoint: http://hub-alloy.monitoring.svc.cluster.local:4318
+
+  propagators:
+    - tracecontext
+    - baggage
+
+  sampler:
+    type: parentbased_traceidratio
+    argument: "1.0"   # 100% sampling — reduce for high-traffic services
+
+  resource:
+    attributes:
+      cluster: hub
+      namespace: <YOUR_NAMESPACE>   # replace with the target namespace
+
+  # ── Language-specific settings ────────────────────────────────────────────
+
+  dotnet:
+    env:
+      - name: OTEL_DOTNET_AUTO_LOGS_INCLUDE_FORMATTED_MESSAGE
+        value: "true"
+    logLevel: Information
+
+  java: {}   # no extra config needed for most Spring Boot apps
+
+  nodejs: {}
+
+  python:
+    env:
+      - name: OTEL_PYTHON_LOG_CORRELATION
+        value: "true"

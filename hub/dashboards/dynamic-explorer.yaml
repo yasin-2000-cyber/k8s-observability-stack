@@ -13,7 +13,7 @@ data:
       "title": "Dynamic Logs & Traces Explorer",
       "uid": "dynamic-explorer",
       "schemaVersion": 38,
-      "version": 3,
+      "version": 6,
       "refresh": "30s",
       "time": {"from": "now-1h", "to": "now"},
       "timezone": "browser",
@@ -91,14 +91,14 @@ data:
           },
           {
             "name": "service",
-            "label": "Service (traces)",
+            "label": "Service (ingress)",
             "type": "query",
-            "datasource": {"type": "prometheus", "uid": "mimir-hub"},
-            "query": "label_values(traces_spanmetrics_calls_total{namespace=~\"$namespace\"}, service_name)",
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "query": "label_values(nginx_ingress_controller_requests{cluster=~\"$cluster\",namespace=~\"$namespace\"}, service)",
             "refresh": 2,
             "multi": true,
             "includeAll": true,
-            "allValue": ".*",
+            "allValue": ".+",
             "sort": 1
           },
           {
@@ -122,13 +122,13 @@ data:
           "id": 2,
           "type": "timeseries",
           "title": "Request Rate (RPS)",
-          "description": "Requests per second from Tempo span metrics — select service(s) above",
+          "description": "Ingress-level requests per second (nginx_ingress_controller_requests). Covers external/edge traffic through the ingress controller only, not internal service-to-service calls.",
           "gridPos": {"x": 0, "y": 1, "w": 8, "h": 7},
-          "datasource": {"type": "prometheus", "uid": "mimir-hub"},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
           "fieldConfig": {"defaults": {"unit": "reqps", "min": 0}},
           "targets": [{
-            "expr": "sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~\"$service\",namespace=~\"$namespace\"}[5m]))",
-            "legendFormat": "{{service_name}}",
+            "expr": "sum by (service) (rate(nginx_ingress_controller_requests{cluster=~\"$cluster\",namespace=~\"$namespace\",service=~\"$service\"}[5m]))",
+            "legendFormat": "{{service}}",
             "refId": "A"
           }]
         },
@@ -136,9 +136,9 @@ data:
           "id": 3,
           "type": "timeseries",
           "title": "Error Rate %",
-          "description": "Fraction of spans with STATUS_CODE_ERROR — alert fires at >5%",
+          "description": "Fraction of HTTP 5xx responses at the ingress. Covers external/edge traffic through the ingress controller only, not internal service-to-service calls.",
           "gridPos": {"x": 8, "y": 1, "w": 8, "h": 7},
-          "datasource": {"type": "prometheus", "uid": "mimir-hub"},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
           "fieldConfig": {
             "defaults": {
               "unit": "percentunit",
@@ -148,8 +148,8 @@ data:
             }
           },
           "targets": [{
-            "expr": "sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~\"$service\",namespace=~\"$namespace\",status_code=\"STATUS_CODE_ERROR\"}[5m])) / sum by (service_name) (rate(traces_spanmetrics_calls_total{service_name=~\"$service\",namespace=~\"$namespace\"}[5m]))",
-            "legendFormat": "{{service_name}}",
+            "expr": "sum by (service) (rate(nginx_ingress_controller_requests{cluster=~\"$cluster\",namespace=~\"$namespace\",service=~\"$service\",status=~\"5..\"}[5m])) / sum by (service) (rate(nginx_ingress_controller_requests{cluster=~\"$cluster\",namespace=~\"$namespace\",service=~\"$service\"}[5m]))",
+            "legendFormat": "{{service}}",
             "refId": "A"
           }]
         },
@@ -157,21 +157,132 @@ data:
           "id": 4,
           "type": "timeseries",
           "title": "Latency p50 / p95 / p99",
-          "description": "Request duration percentiles in milliseconds from span metrics histograms",
+          "description": "Request duration percentiles in milliseconds from the ingress controller's request_duration_seconds histogram. Covers external/edge traffic only.",
           "gridPos": {"x": 16, "y": 1, "w": 8, "h": 7},
-          "datasource": {"type": "prometheus", "uid": "mimir-hub"},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
           "fieldConfig": {"defaults": {"unit": "ms", "min": 0}},
           "targets": [
-            {"expr": "histogram_quantile(0.50, sum by (service_name, le) (rate(traces_spanmetrics_latency_bucket{service_name=~\"$service\",namespace=~\"$namespace\"}[5m]))) * 1000", "legendFormat": "p50 {{service_name}}", "refId": "A"},
-            {"expr": "histogram_quantile(0.95, sum by (service_name, le) (rate(traces_spanmetrics_latency_bucket{service_name=~\"$service\",namespace=~\"$namespace\"}[5m]))) * 1000", "legendFormat": "p95 {{service_name}}", "refId": "B"},
-            {"expr": "histogram_quantile(0.99, sum by (service_name, le) (rate(traces_spanmetrics_latency_bucket{service_name=~\"$service\",namespace=~\"$namespace\"}[5m]))) * 1000", "legendFormat": "p99 {{service_name}}", "refId": "C"}
+            {"expr": "histogram_quantile(0.50, sum by (service, le) (rate(nginx_ingress_controller_request_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",service=~\"$service\"}[5m]))) * 1000", "legendFormat": "p50 {{service}}", "refId": "A"},
+            {"expr": "histogram_quantile(0.95, sum by (service, le) (rate(nginx_ingress_controller_request_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",service=~\"$service\"}[5m]))) * 1000", "legendFormat": "p95 {{service}}", "refId": "B"},
+            {"expr": "histogram_quantile(0.99, sum by (service, le) (rate(nginx_ingress_controller_request_duration_seconds_bucket{cluster=~\"$cluster\",namespace=~\"$namespace\",service=~\"$service\"}[5m]))) * 1000", "legendFormat": "p99 {{service}}", "refId": "C"}
           ]
+        },
+        {
+          "id": 11,
+          "type": "row",
+          "title": "Kubernetes / Containers",
+          "gridPos": {"x": 0, "y": 8, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "id": 12,
+          "type": "timeseries",
+          "title": "CPU Usage",
+          "description": "Container CPU usage in cores (cAdvisor). Select pod/container above to narrow down.",
+          "gridPos": {"x": 0, "y": 9, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {"defaults": {"unit": "cores", "min": 0}},
+          "targets": [{
+            "expr": "sum by (pod, container) (rate(container_cpu_usage_seconds_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",container!=\"\",container!=\"POD\"}[5m]))",
+            "legendFormat": "{{pod}} / {{container}}",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 13,
+          "type": "timeseries",
+          "title": "Memory Usage (WSS)",
+          "description": "Container working-set memory in bytes (cAdvisor). Includes page cache pages that cannot be reclaimed.",
+          "gridPos": {"x": 12, "y": 9, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {"defaults": {"unit": "bytes", "min": 0}},
+          "targets": [{
+            "expr": "sum by (pod, container) (container_memory_working_set_bytes{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",container!=\"\",container!=\"POD\"})",
+            "legendFormat": "{{pod}} / {{container}}",
+            "refId": "A"
+          }]
+        },
+        {
+          "id": 14,
+          "type": "timeseries",
+          "title": "Network I/O",
+          "description": "Pod-level network receive (positive) and transmit (negative) bandwidth.",
+          "gridPos": {"x": 0, "y": 17, "w": 16, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {"defaults": {"unit": "Bps", "custom": {"fillOpacity": 10}}},
+          "targets": [
+            {
+              "expr": "sum by (pod) (rate(container_network_receive_bytes_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\"}[5m]))",
+              "legendFormat": "RX {{pod}}",
+              "refId": "A"
+            },
+            {
+              "expr": "-sum by (pod) (rate(container_network_transmit_bytes_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\"}[5m]))",
+              "legendFormat": "TX {{pod}}",
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "id": 15,
+          "type": "table",
+          "title": "Container Restarts (1 h)",
+          "description": "Container restarts in the past hour, sorted highest first. Color: green=0, yellow≥1, red≥5.",
+          "gridPos": {"x": 16, "y": 17, "w": 8, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {"id": "byName", "options": "Restarts"},
+                "properties": [
+                  {"id": "custom.displayMode", "value": "color-background"},
+                  {"id": "custom.width", "value": 80}
+                ]
+              },
+              {
+                "matcher": {"id": "byName", "options": "Pod"},
+                "properties": [{"id": "custom.width", "value": 130}]
+              },
+              {
+                "matcher": {"id": "byName", "options": "Container"},
+                "properties": [{"id": "custom.width", "value": 100}]
+              }
+            ]
+          },
+          "options": {
+            "sortBy": [{"displayName": "Restarts", "desc": true}],
+            "footer": {"show": false, "reducer": ["sum"], "countRows": false}
+          },
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {"Time": true},
+                "renameByName": {"Value": "Restarts", "pod": "Pod", "container": "Container"},
+                "indexByName": {"Pod": 0, "Container": 1, "Restarts": 2}
+              }
+            }
+          ],
+          "targets": [{
+            "expr": "sum by (pod, container) (increase(kube_pod_container_status_restarts_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\"}[1h]))",
+            "legendFormat": "",
+            "refId": "A",
+            "instant": true,
+            "format": "table"
+          }]
         },
         {
           "id": 5,
           "type": "row",
           "title": "Logs",
-          "gridPos": {"x": 0, "y": 8, "w": 24, "h": 1},
+          "gridPos": {"x": 0, "y": 25, "w": 24, "h": 1},
           "collapsed": false
         },
         {
@@ -179,7 +290,7 @@ data:
           "type": "timeseries",
           "title": "Log Rate",
           "description": "Log ingestion rate — use to detect unusual silence or log storms",
-          "gridPos": {"x": 0, "y": 9, "w": 12, "h": 6},
+          "gridPos": {"x": 0, "y": 26, "w": 12, "h": 6},
           "datasource": {"type": "loki", "uid": "loki"},
           "fieldConfig": {"defaults": {"unit": "ops", "min": 0}},
           "targets": [{
@@ -193,7 +304,7 @@ data:
           "type": "timeseries",
           "title": "Error Log Rate",
           "description": "Rate of log lines matching 'error' keyword — spikes indicate application failures",
-          "gridPos": {"x": 12, "y": 9, "w": 12, "h": 6},
+          "gridPos": {"x": 12, "y": 26, "w": 12, "h": 6},
           "datasource": {"type": "loki", "uid": "loki"},
           "fieldConfig": {
             "defaults": {
@@ -214,7 +325,7 @@ data:
           "type": "logs",
           "title": "Live Logs  —  use Keyword Search to filter",
           "description": "Logs matching selected cluster/namespace/pod/container and keyword filter",
-          "gridPos": {"x": 0, "y": 15, "w": 24, "h": 14},
+          "gridPos": {"x": 0, "y": 32, "w": 24, "h": 14},
           "datasource": {"type": "loki", "uid": "loki"},
           "options": {
             "dedupStrategy": "none",
@@ -235,7 +346,7 @@ data:
           "id": 9,
           "type": "row",
           "title": "Recent Errors",
-          "gridPos": {"x": 0, "y": 29, "w": 24, "h": 1},
+          "gridPos": {"x": 0, "y": 46, "w": 24, "h": 1},
           "collapsed": false
         },
         {
@@ -243,7 +354,7 @@ data:
           "type": "logs",
           "title": "Error Logs  —  keyword search also applies",
           "description": "Log lines containing 'error' within the selected scope",
-          "gridPos": {"x": 0, "y": 30, "w": 24, "h": 10},
+          "gridPos": {"x": 0, "y": 47, "w": 24, "h": 10},
           "datasource": {"type": "loki", "uid": "loki"},
           "options": {
             "dedupStrategy": "signature",

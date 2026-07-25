@@ -29,7 +29,7 @@ data:
             "refresh": 2,
             "multi": true,
             "includeAll": true,
-            "allValue": ".*",
+            "allValue": ".+",
             "sort": 1
           },
           {

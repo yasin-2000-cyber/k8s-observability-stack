@@ -22,7 +22,7 @@ spec:
               command:
                 - sh
                 - -c
-                - pip install --quiet --no-cache-dir requests && python3 /scripts/report.py
+                - pip install --quiet --no-cache-dir requests==2.32.3 && python3 /scripts/report.py
               env:
                 - name: GRAFANA_URL
                   value: {{ .Values.grafana.url | quote }}
@@ -58,6 +58,8 @@ spec:
                     secretKeyRef:
                       name: monthly-reporter-credentials
                       key: OPENAI_API_KEY
+                - name: OPENAI_MODEL
+                  value: {{ .Values.openaiModel | quote }}
               volumeMounts:
                 - name: script
                   mountPath: /scripts

@@ -80,7 +80,8 @@ data:
           uid: $uid, name: $name, type: $type, url: $url,
           access: "proxy", isDefault: $isDefault,
           jsonData: { httpHeaderName1: "X-Scope-OrgID" },
-          secureJsonData: { httpHeaderValue1: $hval }
+          secureJsonData: { httpHeaderValue1: $hval },
+          secureJsonFields: {}
         }')
 
       if [[ "$ds_type" == "prometheus" ]]; then
@@ -101,7 +102,7 @@ data:
         body=$(echo "$body" | jq '
           .jsonData.tracesToLogsV2 = {
             datasourceUid: "loki",
-            filterByTraceID: true, filterBySpanID: false, customQuery: false,
+            filterByTraceID: true, filterBySpanID: true, customQuery: false,
             spanStartTimeShift: "-1m", spanEndTimeShift: "1m",
             tags: [
               {key: "k8s.namespace.name", value: "namespace"},
@@ -125,9 +126,58 @@ data:
       fi
     }
 
-    # clone_dashboards_from_org1 <target_org_id>
+    # ensure_folder <org_id> <title> → prints JSON {"id": N, "uid": "..."}
+    ensure_folder() {
+      local org_id="$1" title="$2"
+
+      local existing
+      existing=$(gapi_org "$org_id" GET "/api/folders" 2>/dev/null \
+        | jq -c --arg t "$title" '.[] | select(.title == $t) | {id, uid}' | head -1 || true)
+
+      if [[ -n "$existing" ]]; then
+        echo "$existing"
+        return
+      fi
+
+      local result
+      result=$(gapi_org "$org_id" POST "/api/folders" \
+        "$(jq -n --arg title "$title" '{title: $title}')") || true
+      echo "$result" | jq -c '{id: (.id // 0), uid: (.uid // "")}'
+    }
+
+    # clone_dashboards_from_org1 <target_org_id> <namespace>
+    # Copies only the approved dashboards from Org 1 into the target org,
+    # placing them in the correct Explorer or Logs folder.
+    # Datasource UIDs are identical across all orgs so panel queries resolve without modification.
+    # The dashboard's own "namespace" template variable (if present) is rewritten to a hidden,
+    # single-value custom variable pinned to this org's namespace — Mimir has no per-namespace
+    # tenant boundary (unlike Loki), so without this every Mimir-backed panel would default to
+    # "All" and show every namespace in the cluster, not just this org's own.
     clone_dashboards_from_org1() {
-      local target_org_id="$1"
+      local target_org_id="$1" ns="$2"
+
+      # Ensure target folders exist; ensure_folder returns {"id": N, "uid": "..."}
+      local explorer_meta logs_meta
+      explorer_meta=$(ensure_folder "$target_org_id" "Explorer")
+      logs_meta=$(ensure_folder "$target_org_id" "Logs")
+
+      local explorer_folder_id explorer_folder_uid logs_folder_id logs_folder_uid
+      explorer_folder_id=$(echo "$explorer_meta" | jq -r '.id')
+      explorer_folder_uid=$(echo "$explorer_meta" | jq -r '.uid')
+      logs_folder_id=$(echo "$logs_meta" | jq -r '.id')
+      logs_folder_uid=$(echo "$logs_meta" | jq -r '.uid')
+
+      # Grant Viewer role read-only access so per-namespace org viewers can see the folders
+      local viewer_perms
+      viewer_perms=$(jq -n '{items: [
+        {role: "Viewer", permission: 1},
+        {role: "Editor", permission: 2},
+        {role: "Admin",  permission: 4}
+      ]}')
+      for fuid in "$explorer_folder_uid" "$logs_folder_uid"; do
+        [[ -z "$fuid" ]] && continue
+        gapi_org "$target_org_id" POST "/api/folders/${fuid}/permissions" "$viewer_perms" > /dev/null || true
+      done
 
       local uids
       uids=$(gapi_org 1 GET "/api/search?type=dash-db&limit=500" | jq -r '.[].uid')
@@ -135,14 +185,34 @@ data:
       while IFS= read -r uid; do
         [[ -z "$uid" ]] && continue
 
+        # Only clone approved dashboards to per-namespace orgs
         if ! echo "$ALLOWED_CLONE_UIDS" | grep -qw "$uid"; then
           continue
         fi
 
+        # Map each dashboard UID to its target folder
+        local folder_id
+        case "$uid" in
+          dynamic-explorer|k8s-container) folder_id="$explorer_folder_id" ;;
+          loki-overview)                  folder_id="$logs_folder_id" ;;
+          *)                              folder_id=0 ;;
+        esac
+
         local import_body
-        import_body=$(gapi_org 1 GET "/api/dashboards/uid/${uid}" | jq '
-          .dashboard |= (del(.id) | .version = 1) |
-          {dashboard: .dashboard, overwrite: true, folderId: 0}
+        import_body=$(gapi_org 1 GET "/api/dashboards/uid/${uid}" | jq \
+          --argjson fid "$folder_id" --arg ns "$ns" '
+          .dashboard |= (
+            del(.id) | .version = 1 |
+            .templating.list |= map(
+              if .name == "namespace" then
+                {name: "namespace", label: "Namespace", type: "custom",
+                 query: $ns, current: {selected: true, text: $ns, value: $ns},
+                 options: [{selected: true, text: $ns, value: $ns}],
+                 multi: false, includeAll: false, hide: 2}
+              else . end
+            )
+          ) |
+          {dashboard: .dashboard, overwrite: true, folderId: $fid}
         ')
 
         gapi_org "$target_org_id" POST "/api/dashboards/import" "$import_body" > /dev/null || true
@@ -150,6 +220,8 @@ data:
     }
 
     # cleanup_org_dashboards <org_id>
+    # Removes infra-only dashboards from a per-namespace org.
+    # Only deletes known UIDs — editor-created custom dashboards are untouched.
     cleanup_org_dashboards() {
       local org_id="$1"
 
@@ -161,6 +233,59 @@ data:
           gapi_org "$org_id" DELETE "/api/dashboards/uid/${uid}" > /dev/null || true
         fi
       done
+    }
+
+    # ensure_email_contact_point <org_id>
+    # Creates/updates an "email-team" contact point with all non-admin org member emails.
+    # Skips silently when the org has no users yet (team not onboarded).
+    ensure_email_contact_point() {
+      local org_id="$1"
+      local cp_uid="email-team-${org_id}"
+
+      local emails
+      emails=$(gapi_org "$org_id" GET "/api/org/users" 2>/dev/null | \
+        jq -r '[.[] | select(.login != "admin") | .email] | join(",")' 2>/dev/null || echo "")
+
+      [[ -z "$emails" ]] && return
+
+      local body
+      body=$(jq -n --arg uid "$cp_uid" --arg to "$emails" '{
+        name: "email-team",
+        receivers: [{
+          uid: $uid,
+          type: "email",
+          settings: {addresses: $to, singleEmail: false},
+          sendReminder: false
+        }]
+      }')
+
+      local existing_uid
+      existing_uid=$(gapi_org "$org_id" GET "/api/v1/provisioning/contact-points" 2>/dev/null | \
+        jq -r ".[] | select(.uid == \"${cp_uid}\") | .uid" 2>/dev/null || echo "")
+
+      if [[ -n "$existing_uid" ]]; then
+        gapi_org "$org_id" PUT "/api/v1/provisioning/contact-points/${cp_uid}" "$body" > /dev/null || true
+      else
+        gapi_org "$org_id" POST "/api/v1/provisioning/contact-points" "$body" > /dev/null || true
+      fi
+    }
+
+    # ensure_notification_policy <org_id>
+    # Sets the default notification policy to route all alerts to the email-team contact point.
+    ensure_notification_policy() {
+      local org_id="$1"
+
+      local policy
+      policy=$(jq -n '{
+        receiver: "email-team",
+        group_by: ["alertname", "cluster", "namespace"],
+        group_wait: "30s",
+        group_interval: "5m",
+        repeat_interval: "4h",
+        routes: []
+      }')
+
+      gapi_org "$org_id" PUT "/api/v1/provisioning/policies" "$policy" > /dev/null || true
     }
 
     # reconcile_cluster <cluster_name> <newline_separated_namespaces>
@@ -194,8 +319,11 @@ data:
           "http://mimir-nginx.monitoring.svc.cluster.local:80/prometheus" \
           "{{ .Values.hubCluster }}"
 
-        clone_dashboards_from_org1 "$org_id"
+        clone_dashboards_from_org1 "$org_id" "$ns"
         cleanup_org_dashboards "$org_id"
+
+        ensure_email_contact_point "$org_id"
+        ensure_notification_policy "$org_id"
 
         echo "[reconcile] done: ${org_name} (orgId=${org_id})"
       done <<< "$namespaces"

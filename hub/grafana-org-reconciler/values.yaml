@@ -1,4 +1,4 @@
-schedule: "*/5 * * * *"   # run every 5 minutes
+schedule: "*/30 * * * *"   # run every 30 minutes
 
 image: dtzar/helm-kubectl:4.2.1
 

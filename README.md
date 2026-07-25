@@ -27,7 +27,7 @@ A production-grade, multi-tenant Kubernetes observability stack built on the [Gr
 | **Hub collects spoke data** | No cross-cluster kubeconfig — spokes push over public HTTPS endpoints |
 | **Loki multi-tenancy per namespace** | `{cluster}-{namespace}` tenant ID = hard isolation; teams can't query other namespaces |
 | **Mimir multi-tenancy per cluster** | Metrics for each cluster are stored under a separate tenant, queried together via tenant federation |
-| **Org reconciler instead of static config** | New namespaces get a Grafana org automatically within 5 minutes — no manual provisioning |
+| **Org reconciler instead of static config** | New namespaces get a Grafana org automatically within 30 minutes — no manual provisioning |
 | **Span RED metrics via hub-alloy** | Tempo can't add `X-Scope-OrgID` headers; hub-alloy acts as a proxy to stamp the correct tenant |
 
 ---
@@ -39,12 +39,13 @@ A production-grade, multi-tenant Kubernetes observability stack built on the [Gr
 | Mimir | `grafana/mimir-distributed` | ≥ 5.5.0 | Long-term metrics storage (multi-tenant) |
 | Loki | `grafana/loki` | ≥ 6.x | Log aggregation (multi-tenant, TSDB + S3) |
 | Tempo | `grafana/tempo` | ≥ 1.x | Distributed trace storage (multi-tenant) |
+| tempo-otlp-ingress | Custom (this repo) | — | Dedicated Ingress for OTLP gRPC trace ingest from spoke clusters |
 | Grafana | `grafana/grafana` | ≥ 11.x | Visualization + per-namespace org management |
-| Alertmanager | `prometheus-community/alertmanager` | ≥ 0.x | Alert routing and email delivery |
-| OTel Operator | `open-telemetry/opentelemetry-operator` | ≥ 0.x | Auto-instrumentation CRDs for spoke apps |
+| Alertmanager | `prometheus-community/alertmanager` | ≥ 0.x | Alert routing, email delivery, and optional Microsoft Teams webhook |
+| OTel Operator | `open-telemetry/opentelemetry-operator` | ≥ 0.x | Auto-instrumentation CRDs for hub and spoke apps |
 | hub-alloy | Custom (this repo) | 1.0.0 | Hub DaemonSet — scrapes hub cluster + receives spoke span metrics |
-| grafana-org-reconciler | Custom (this repo) | 0.1.0 | Creates per-namespace Grafana orgs every 5 minutes |
-| grafana-monthly-reporter | Custom (this repo) | 0.1.0 | AI-driven agentic reporter (gpt-4o-mini + tool calling) — emails monthly HTML report with narrative analysis to each org |
+| grafana-org-reconciler | Custom (this repo) | 0.1.0 | Creates per-namespace Grafana orgs and per-org email alerting every 30 minutes |
+| grafana-monthly-reporter | Custom (this repo) | 0.1.0 | Deterministic Mimir/Loki scrape + AI-written narrative insights (gpt-4o-mini) — emails monthly HTML report to each org |
 | Dashboards | ConfigMaps (this repo) | — | 7 pre-built Grafana dashboards |
 
 ---
@@ -55,6 +56,8 @@ A production-grade, multi-tenant Kubernetes observability stack built on the [Gr
 |-----------|-----------|---------|---------|
 | spoke-alloy | `grafana/alloy` 0.11.0 (wrapped, this repo) | 0.1.0 | Collects metrics/logs/traces, forwards to hub |
 | OTel Instrumentation CR | Custom YAML (this repo) | — | Zero-code auto-instrumentation per namespace |
+
+Apps that run directly on the **hub** cluster (rather than a spoke) skip spoke-alloy entirely and point their `Instrumentation` CR straight at hub-alloy's own OTLP endpoint — see [hub/otel-instrumentation/instrumentation-cr.yaml](hub/otel-instrumentation/instrumentation-cr.yaml).
 
 ---
 
@@ -76,29 +79,30 @@ Grafana (hub cluster)
     └── Datasources: Mimir tenant=spoke-1, Loki tenant=spoke-1-their-app
 ```
 
-The **Org Reconciler** CronJob runs every 5 minutes and:
+The **Org Reconciler** CronJob runs every 30 minutes and:
 1. Discovers namespaces from the hub cluster (kubectl) and spoke clusters (Mimir label values)
 2. Creates a Grafana org per namespace if it does not exist
 3. Provisions 4 datasources per org (Mimir, Loki, Tempo scoped to that cluster; Mimir Hub for span metrics)
-4. Clones 3 approved dashboards from Org 1
+4. Clones the 3 approved dashboards from Org 1 into per-org `Explorer`/`Logs` folders, pinning each dashboard's `namespace` variable to that org's own namespace (Mimir has no per-namespace tenant boundary, unlike Loki, so without this every Mimir-backed panel would default to showing the whole cluster)
 5. Removes any infra-only dashboards from per-namespace orgs
+6. Creates/updates an `email-team` contact point from the org's current member list and points the org's default notification policy at it — so per-namespace alert routing stays in sync with who's actually in that Grafana org, no manual contact-point maintenance required
 
 ---
 
 ## Monthly Automated Report
 
-On the 1st of every month at 08:00 UTC, an AI-driven agentic reporter (OpenAI gpt-4o-mini with tool calling) queries Mimir and Loki for the previous calendar month and emails a professional HTML report to every user in every Grafana org.
+On the 1st of every month at 08:00 UTC, the reporter deterministically scrapes Mimir and Loki for the previous calendar month, renders a professional HTML report, and emails it to every user in every Grafana org.
 
-**How it works:** The LLM is given 5 tools — `list_grafana_orgs`, `list_all_grafana_users`, `query_mimir`, `query_loki`, and `send_report` — and an instruction prompt. It decides what to query for each namespace, interprets the results, writes the HTML, and delivers it. No templating, no hard-coded metric list: the agent drives the entire workflow.
+**How it works:** Target discovery (which cluster/namespace pairs to report on) comes from listing Grafana orgs and splitting each org name against a known cluster-tenant list — no LLM involved in deciding what to query. A fixed, proven set of PromQL/LogQL queries (pods, restarts, CPU/RAM reserved vs. peak usage, ingress request count, log volume, error/warn log counts) is run per namespace. All numbers in the report are computed by this fixed pipeline and never touched by AI. Only the narrative commentary is AI-written: the pre-computed metrics are handed to gpt-4o-mini with instructions to identify operationally meaningful patterns (error spikes, restart storms, capacity headroom) and return 2–4 short bullet points per cluster — the model cannot recompute or restate a number, only comment on ones it's given.
 
 **What the report covers:**
-- Traffic: total requests, total errors, error rate (%), p95 latency
-- Resources: average CPU (cores), average RAM (GB)
-- Logs: total log lines, log volume (GB)
-- Status badge: Healthy (<1% errors) / Warning (1–5%) / Critical (>5%) / Unknown (no trace data)
-- Per-namespace narrative: 2–3 sentence analysis written by the LLM
+- Per-cluster summary: namespace count, total requests, total pod restarts, total error logs
+- Per-namespace table: pods, requests, restarts (highlighted if elevated), CPU/RAM reserved vs. peak usage, error/warn/total log lines and volume
+- Cluster-level AI narrative: 2–4 bullet points per cluster highlighting only what's operationally notable in that period's data
 
-**Requirements:** An OpenAI API key stored in a Kubernetes secret (`monthly-reporter-credentials`, key `OPENAI_API_KEY`). Uses `gpt-4o-mini` — costs pennies per run for typical cluster sizes.
+**Test mode:** the CronJob's script supports `TEST_CLUSTER`, `TEST_NS_LIST`, `TEST_NS_FILTER`, `TEST_NS_LIMIT`, `TEST_RECIPIENTS`, and `TEST_PERIOD_START`/`TEST_PERIOD_END`/`TEST_PERIOD_LABEL` env vars for running a scoped one-off report (e.g. via `kubectl create job --from=cronjob/grafana-monthly-reporter` + `kubectl set env`) without waiting for the real schedule or emailing real recipients.
+
+**Requirements:** An OpenAI API key stored in a Kubernetes secret (`monthly-reporter-credentials`, key `OPENAI_API_KEY`). Uses `gpt-4o-mini` by default (configurable via `openaiModel`) — costs pennies per run for typical cluster sizes. If the OpenAI call fails or times out, the report still sends on schedule with the data tables intact and no AI commentary section.
 
 ![Monthly Report Example](docs/images/monthly-report.png)
 
@@ -117,7 +121,7 @@ Before deploying the hub stack, ensure the following are installed on the hub cl
 | S3-compatible storage | MinIO, AWS S3, Wasabi, etc. — create buckets before deploying |
 | PostgreSQL 14+ | For Grafana backend (SQLite works for testing) |
 
-For each spoke cluster: the OTel Operator must be installed if you want auto-instrumentation.
+For each spoke cluster: the OTel Operator must be installed if you want auto-instrumentation. Apps hosted directly on the hub cluster can be auto-instrumented too — the hub stack installs its own OTel Operator (step 4 below).
 
 ---
 
@@ -159,7 +163,8 @@ kubectl create secret generic monitoring-grafana-secret -n $NAMESPACE \
   --from-literal=AZURE_TENANT_ID=<AZURE_TENANT_ID>
 
 kubectl create secret generic monitoring-alertmanager-credentials -n $NAMESPACE \
-  --from-literal=SMTP_PASSWORD=<YOUR_SMTP_PASSWORD>
+  --from-literal=SMTP_PASSWORD=<YOUR_SMTP_PASSWORD> \
+  --from-literal=teams_webhook_url=<YOUR_TEAMS_INCOMING_WEBHOOK_URL>   # optional — Microsoft Teams alert delivery
 
 kubectl create secret generic monthly-reporter-credentials -n $NAMESPACE \
   --from-literal=OPENAI_API_KEY=<YOUR_OPENAI_API_KEY>
@@ -175,6 +180,10 @@ helm upgrade --install loki grafana/loki \
 
 helm upgrade --install tempo grafana/tempo \
   -n $NAMESPACE -f hub/tempo/values.yaml
+
+# 2b. Tempo OTLP ingress (dedicated gRPC ingress for spoke clusters pushing traces
+# over the public endpoint — see the NOTE in hub/tempo/values.yaml for why this is separate)
+kubectl apply -f hub/tempo-otlp-ingress/ingress.yaml -n $NAMESPACE
 
 # 3. Alertmanager
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
@@ -300,9 +309,11 @@ Or create a `ServiceMonitor` CR if you use Prometheus Operator.
 | Mimir | [hub/mimir/values.yaml](hub/mimir/values.yaml) |
 | Loki | [hub/loki/values.yaml](hub/loki/values.yaml) |
 | Tempo | [hub/tempo/values.yaml](hub/tempo/values.yaml) |
+| Tempo OTLP Ingress | [hub/tempo-otlp-ingress/ingress.yaml](hub/tempo-otlp-ingress/ingress.yaml) |
 | Grafana | [hub/grafana/values.yaml](hub/grafana/values.yaml) |
 | Alertmanager | [hub/alertmanager/values.yaml](hub/alertmanager/values.yaml) |
 | OTel Operator | [hub/otel-operator/values.yaml](hub/otel-operator/values.yaml) |
+| Hub OTel Instrumentation CR | [hub/otel-instrumentation/instrumentation-cr.yaml](hub/otel-instrumentation/instrumentation-cr.yaml) |
 | hub-alloy | [hub/hub-alloy/values.yaml](hub/hub-alloy/values.yaml) |
 | Org Reconciler | [hub/grafana-org-reconciler/values.yaml](hub/grafana-org-reconciler/values.yaml) |
 | Monthly Reporter | [hub/grafana-monthly-reporter/values.yaml](hub/grafana-monthly-reporter/values.yaml) |

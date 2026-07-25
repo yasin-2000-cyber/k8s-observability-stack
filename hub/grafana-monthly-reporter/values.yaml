@@ -20,6 +20,18 @@ smtp:
   port: "587"
   from: "alerts@example.com"   # replace with your sender address
 
+openaiModel: "gpt-4o-mini"
+
+# Cluster tenant IDs this report should cover — must match the Mimir/Loki tenant IDs
+# used by hub-alloy and spoke-alloy (see hub/hub-alloy/values.yaml `cluster` and
+# spoke/values.yaml `cluster_label`). Org names are "<cluster>-<namespace>"; since a
+# cluster name can itself contain hyphens, matching against this known list (rather
+# than splitting on the first "-") is required to derive cluster/namespace correctly.
+hubCluster: hub
+spokeClusters:
+  - spoke-1
+  # - spoke-2
+
 # Required secrets (create before deploying):
 #   grafana-admin-secret          — keys: admin-user, admin-password
 #   monitoring-alertmanager-credentials — key: SMTP_PASSWORD

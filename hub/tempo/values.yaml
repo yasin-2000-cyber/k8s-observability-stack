@@ -77,7 +77,11 @@ service:
   type: ClusterIP
   port: 3100
 
-# ── Main ingress (query API + OTLP HTTP) ──────────────────────────────────────
+# ── Main ingress (query API on port 3100) ─────────────────────────────────────
+# NOTE: OTLP gRPC ingest (port 4317, used by spoke Alloy agents pushing traces over
+# the public endpoint) is handled by a separate Ingress — see hub/tempo-otlp-ingress/.
+# nginx-ingress needs the GRPC backend-protocol annotation for that path, which can't
+# coexist with this plain-HTTP ingress on the same Ingress object.
 ingress:
   enabled: true
   ingressClassName: nginx

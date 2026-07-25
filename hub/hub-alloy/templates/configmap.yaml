@@ -48,22 +48,29 @@ data:
       targets = discovery.kubernetes.nodes.targets
 
       rule {
-        source_labels = ["__address__"]
+        source_labels = ["__meta_kubernetes_node_name"]
         regex         = "(.+)"
-        target_label  = "__address__"
-        replacement   = "$1:10250"
+        target_label  = "__metrics_path__"
+        replacement   = "/api/v1/nodes/$1/proxy/metrics"
+      }
+      rule {
+        target_label = "__address__"
+        replacement  = "kubernetes.default.svc.cluster.local:443"
       }
     }
 
     prometheus.scrape "kubelet" {
+      clustering {
+        enabled = true
+      }
       targets         = discovery.relabel.kubelet.output
       scheme          = "https"
-      forward_to      = [prometheus.relabel.cluster_labels.receiver]
+      forward_to      = [prometheus.relabel.global_metrics_labels.receiver]
       job_name        = "kubelet"
       scrape_interval = "60s"
 
       tls_config {
-        insecure_skip_verify = true
+        ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
       }
 
       authorization {
@@ -76,26 +83,29 @@ data:
       targets = discovery.kubernetes.nodes.targets
 
       rule {
-        source_labels = ["__address__"]
+        source_labels = ["__meta_kubernetes_node_name"]
         regex         = "(.+)"
-        target_label  = "__address__"
-        replacement   = "$1:10250"
+        target_label  = "__metrics_path__"
+        replacement   = "/api/v1/nodes/$1/proxy/metrics/cadvisor"
       }
       rule {
-        target_label = "__metrics_path__"
-        replacement  = "/metrics/cadvisor"
+        target_label = "__address__"
+        replacement  = "kubernetes.default.svc.cluster.local:443"
       }
     }
 
     prometheus.scrape "cadvisor" {
+      clustering {
+        enabled = true
+      }
       targets         = discovery.relabel.cadvisor.output
       scheme          = "https"
-      forward_to      = [prometheus.relabel.cluster_labels.receiver]
+      forward_to      = [prometheus.relabel.global_metrics_labels.receiver]
       job_name        = "cadvisor"
       scrape_interval = "60s"
 
       tls_config {
-        insecure_skip_verify = true
+        ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
       }
 
       authorization {
@@ -170,6 +180,28 @@ data:
       scrape_interval = "60s"
     }
 
+    // --- ingress-nginx controller metrics (request counts/latency for RED dashboards + reporter) ---
+    // ingress-nginx pods carry no prometheus.io/scrape annotation, so the annotation-based
+    // pod_scrape block above never reaches them; discover the metrics Service's Endpoints directly,
+    // same pattern as kube_state_metrics above.
+    discovery.kubernetes "ingress_nginx_metrics" {
+      role = "endpoints"
+      namespaces {
+        names = ["ingress-nginx"]
+      }
+      selectors {
+        role  = "endpoints"
+        label = "app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/component=controller"
+      }
+    }
+
+    prometheus.scrape "ingress_nginx_metrics" {
+      targets         = discovery.kubernetes.ingress_nginx_metrics.targets
+      forward_to      = [prometheus.relabel.global_metrics_labels.receiver]
+      job_name        = "ingress-nginx"
+      scrape_interval = "60s"
+    }
+
     // --- Stamp cluster + datacenter on cluster-global metrics (no node label) ---
     // kube-state-metrics is scraped by every DaemonSet pod; adding node= would create
     // N² time series (one per alloy pod × per k8s node) instead of N.
@@ -222,7 +254,7 @@ data:
 
     // --- Receive Prometheus remote_write from Tempo metricsGenerator ---
     // Tempo does not support headers in remoteWriteUrl; it writes here instead,
-    // and hub-alloy forwards to Mimir with the correct X-Scope-OrgID tenant header.
+    // and hub-alloy forwards to Mimir with X-Scope-OrgID: {{ .Values.cluster }} already in remote_write config.
     prometheus.receive_http "tempo_span_metrics" {
       http {
         listen_address = "0.0.0.0"

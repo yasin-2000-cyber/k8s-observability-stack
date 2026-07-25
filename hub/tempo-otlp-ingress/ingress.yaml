@@ -1,0 +1,32 @@
+# Dedicated Ingress for OTLP gRPC trace ingestion from spoke clusters.
+# Shares the same hostname as hub/tempo's main ingress (query API, port 3100) but
+# routes a different path to Tempo's gRPC port (4317) with the GRPC backend-protocol
+# annotation — nginx-ingress can't mix plain-HTTP and gRPC backends on one Ingress
+# object, so this has to be a separate resource even though the host is identical.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hub-tempo-otlp
+  namespace: monitoring
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+    external-dns.alpha.kubernetes.io/target: "<YOUR_EXTERNAL_IP>"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: hub-tempo.<YOUR_DOMAIN>
+      http:
+        paths:
+          - path: /opentelemetry.proto.collector.trace.v1.TraceService
+            pathType: Prefix
+            backend:
+              service:
+                name: tempo
+                port:
+                  number: 4317
+  tls:
+    - hosts:
+        - hub-tempo.<YOUR_DOMAIN>
+      secretName: hub-tempo-tls

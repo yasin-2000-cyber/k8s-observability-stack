@@ -8,6 +8,11 @@
 #     --from-literal=S3_SECRET_KEY=<YOUR_SECRET_KEY>
 global:
   # CoreDNS ClusterIP — run: kubectl get svc -n kube-system kube-dns
+  # v5.5.0+ removed the custom-resolver conditional from the nginx configmap template;
+  # this dnsService value is the only thing controlling the resolver line now. The
+  # trailing "#" comments out the FQDN suffix nginx would otherwise append, which is
+  # invalid syntax for this directive.
+  # Rendered result: resolver 10.96.0.10 valid=30s ipv6=off; #.kube-system.svc.cluster.local.;
   dnsService: "10.96.0.10 valid=30s ipv6=off; #"
   extraEnvFrom:
     - secretRef:
@@ -81,8 +86,7 @@ ingester:
       cpu: 500m
       memory: 1Gi
     limits:
-      cpu: 2000m
-      memory: 4Gi
+      memory: 16Gi   # ingester is the most memory-hungry component; no CPU limit to avoid throttling under load
 
 distributor:
   replicas: 1

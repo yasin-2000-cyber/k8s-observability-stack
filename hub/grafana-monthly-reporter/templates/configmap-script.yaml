@@ -6,7 +6,7 @@ metadata:
 data:
   report.py: |
     #!/usr/bin/env python3
-    """Monthly infrastructure report — agentic driver (OpenAI gpt-4o-mini + tool use)."""
+    """Monthly infrastructure report — deterministic scrape, AI narrative insights only."""
     import base64
     import json
     import os
@@ -34,29 +34,36 @@ data:
     SMTP_FROM       = os.environ["SMTP_FROM"]
     SMTP_PASS       = os.environ["SMTP_PASSWORD"]
     OPENAI_API_KEY  = os.environ["OPENAI_API_KEY"]
+    OPENAI_MODEL    = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 
-    # Optional: cap namespace count or filter by name for testing
-    TEST_NS_LIMIT  = int(os.environ["TEST_NS_LIMIT"]) if os.environ.get("TEST_NS_LIMIT") else None
-    TEST_NS_FILTER = os.environ.get("TEST_NS_FILTER")  # e.g. "babylai-dev" matches substring of org name
+    # Optional test-mode overrides (set via `kubectl set env job/<name> ...` on a one-off Job
+    # created with `kubectl create job --from=cronjob/grafana-monthly-reporter` — nothing in the
+    # CronJob template needs to declare these for a manual test run to use them).
+    TEST_CLUSTER    = os.environ.get("TEST_CLUSTER")     # restrict to one cluster, e.g. "hub"
+    TEST_NS_LIST    = os.environ.get("TEST_NS_LIST")     # comma-sep namespace names, e.g. "my-app-prod,other-app-prod"
+    TEST_NS_FILTER  = os.environ.get("TEST_NS_FILTER")   # substring match on namespace name
+    TEST_NS_LIMIT   = int(os.environ["TEST_NS_LIMIT"]) if os.environ.get("TEST_NS_LIMIT") else None
+    TEST_RECIPIENTS = os.environ.get("TEST_RECIPIENTS")  # comma-sep emails; skips list_all_grafana_users() when set
 
     # ── Time range ───────────────────────────────────────────────────────────────
     # Override via TEST_PERIOD_START / TEST_PERIOD_END / TEST_PERIOD_LABEL for test jobs.
 
     if os.environ.get("TEST_PERIOD_START"):
-        MONTH_START = int(os.environ["TEST_PERIOD_START"])
-        MONTH_END   = int(os.environ["TEST_PERIOD_END"])
-        MONTH_LABEL = os.environ.get("TEST_PERIOD_LABEL", "Test Period")
+        PERIOD_START = int(os.environ["TEST_PERIOD_START"])
+        PERIOD_END   = int(os.environ["TEST_PERIOD_END"])
+        PERIOD_LABEL = os.environ.get("TEST_PERIOD_LABEL", "Test Period")
     else:
-        now         = datetime.now(tz=timezone.utc)
-        first_this  = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        last_month  = (first_this.replace(month=first_this.month - 1) if first_this.month > 1
-                       else first_this.replace(year=first_this.year - 1, month=12))
-        MONTH_START = int(last_month.timestamp())
-        MONTH_END   = int(first_this.timestamp())
-        MONTH_LABEL = last_month.strftime("%B %Y")
+        now          = datetime.now(tz=timezone.utc)
+        first_this   = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        last_month   = (first_this.replace(month=first_this.month - 1) if first_this.month > 1
+                        else first_this.replace(year=first_this.year - 1, month=12))
+        PERIOD_START = int(last_month.timestamp())
+        PERIOD_END   = int(first_this.timestamp())
+        PERIOD_LABEL = last_month.strftime("%B %Y")
 
-    MONTH_DUR = MONTH_END - MONTH_START
-    print(f"[reporter] period: {MONTH_LABEL}  {MONTH_START} -> {MONTH_END}  ({MONTH_DUR}s)")
+    PERIOD_DUR    = PERIOD_END - PERIOD_START
+    GENERATION_TS = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    print(f"[reporter] period: {PERIOD_LABEL}  {PERIOD_START} -> {PERIOD_END}  ({PERIOD_DUR}s)")
 
     # ── Grafana HTTP helper ──────────────────────────────────────────────────────
 
@@ -70,25 +77,52 @@ data:
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read())
 
-    # ── Recipient cache (set by list_all_grafana_users, used by send_report) ─────
+    # ── Target discovery (cluster, namespace pairs from Grafana orgs) ────────────
 
-    _recipient_cache = []
+    # Known cluster tenant IDs (matches grafana-org-reconciler's own list, from
+    # .Values.hubCluster / .Values.spokeClusters). Org names are "<cluster>-<namespace>",
+    # and since a cluster name can itself contain hyphens, splitting on the first "-"
+    # would derive the wrong cluster/namespace split. Match against this list instead
+    # (longest first if one cluster name is a prefix of another).
+    KNOWN_CLUSTERS = [{{ range $i, $c := (prepend .Values.spokeClusters .Values.hubCluster) }}{{ if $i }}, {{ end }}"{{ $c }}"{{ end }}]
 
-    # ── Tool implementations ─────────────────────────────────────────────────────
+    def split_org_name(name):
+        """org name "<cluster>-<namespace>" -> (cluster, namespace), or (None, None) if no known
+        cluster prefix matches (e.g. org id 1's "main")."""
+        for cluster in KNOWN_CLUSTERS:
+            prefix = cluster + "-"
+            if name.startswith(prefix):
+                return cluster, name[len(prefix):]
+        return None, None
 
-    def tool_list_grafana_orgs(args):
+    def discover_targets():
+        """Returns [(cluster, namespace, org_name), ...], org id 1 (hub) excluded."""
         orgs = _grafana_get("/api/orgs")
-        result = [{"id": o["id"], "name": o["name"]} for o in orgs if o["id"] != 1]
-        if TEST_NS_FILTER:
-            result = [o for o in result if TEST_NS_FILTER in o["name"]]
-            print(f"  [test] filtered to '{TEST_NS_FILTER}': {[o['name'] for o in result]}")
-        elif TEST_NS_LIMIT:
-            result = result[:TEST_NS_LIMIT]
-            print(f"  [test] namespace list capped to {TEST_NS_LIMIT}")
-        return result
+        targets = []
+        for o in orgs:
+            if o["id"] == 1:
+                continue
+            name = o["name"]
+            cluster, ns = split_org_name(name)
+            if cluster is None:
+                print(f"  [warn] org '{name}' doesn't match any known cluster prefix — skipping")
+                continue
+            targets.append((cluster, ns, name))
 
-    def tool_list_all_grafana_users(args):
-        global _recipient_cache
+        if TEST_NS_LIST:
+            allowed = {n.strip() for n in TEST_NS_LIST.split(",")}
+            targets = [t for t in targets if t[1] in allowed]
+        if TEST_CLUSTER:
+            targets = [t for t in targets if t[0] == TEST_CLUSTER]
+        if TEST_NS_FILTER:
+            targets = [t for t in targets if TEST_NS_FILTER in t[1]]
+        if TEST_NS_LIMIT:
+            targets = targets[:TEST_NS_LIMIT]
+
+        print(f"[reporter] targets: {[t[2] for t in targets]}")
+        return targets
+
+    def list_all_grafana_users():
         emails = []
         page = 1
         while True:
@@ -102,196 +136,148 @@ data:
             if len(users) < 1000:
                 break
             page += 1
-        _recipient_cache = sorted(set(emails))
-        print(f"  [users] {len(_recipient_cache)} recipients found")
-        return _recipient_cache
+        recipients = sorted(set(emails))
+        print(f"[reporter] {len(recipients)} recipients found")
+        return recipients
 
-    def tool_query_mimir(args):
-        promql  = args["promql"]
-        cluster = args["cluster"]
-        end     = args["end"]
-        params  = urllib.parse.urlencode({"query": promql, "time": end})
-        url     = f"{MIMIR_URL}/prometheus/api/v1/query?{params}"
-        req     = urllib.request.Request(url, headers={"X-Scope-OrgID": cluster})
+    # ── Mimir / Loki direct query helpers ─────────────────────────────────────────
+
+    def query_mimir(promql, cluster, at_ts):
+        """Instant query at at_ts. Range vectors ([Ns] etc.) are evaluated at at_ts;
+        pure instant gauges (no range vector in the expr) ignore at_ts — kube-state-metrics
+        gauge data is only reliably available at current time in this Mimir setup."""
+        is_range = "[" in promql
+        qparams = {"query": promql}
+        if is_range:
+            qparams["time"] = str(at_ts)
+        url = f"{MIMIR_URL}/prometheus/api/v1/query?{urllib.parse.urlencode(qparams)}"
+        req = urllib.request.Request(url, headers={"X-Scope-OrgID": cluster})
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 data = json.loads(r.read())
             results = data.get("data", {}).get("result", [])
             if results:
                 return float(results[0]["value"][1])
+            return 0.0  # empty vector = legitimate zero (e.g. no restarts/no matching pods), not "unknown"
         except Exception as e:
-            print(f"  [warn] mimir: {e}")
-        return None
+            print(f"  [warn] mimir query failed ({cluster}): {e}")
+        return None  # actual query failure = truly unknown, renders as "--"
 
-    def tool_query_loki(args):
-        logql  = args["logql"]
-        tenant = args["tenant"]
-        end    = args["end"]
-        params = urllib.parse.urlencode({"query": logql, "time": end, "limit": "1"})
-        url    = f"{LOKI_URL}/loki/api/v1/query?{params}"
-        req    = urllib.request.Request(url, headers={"X-Scope-OrgID": tenant})
+    def query_loki(logql, tenant, at_ts):
+        params = urllib.parse.urlencode({"query": logql, "time": str(at_ts)})
+        url = f"{LOKI_URL}/loki/api/v1/query?{params}"
+        req = urllib.request.Request(url, headers={"X-Scope-OrgID": tenant})
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 data = json.loads(r.read())
             results = data.get("data", {}).get("result", [])
             if results:
-                return float(results[0]["value"][1])
+                return sum(float(r["value"][1]) for r in results if "value" in r)
+            return 0.0  # empty vector = legitimate zero (e.g. no error/warn lines in the window)
         except Exception as e:
-            print(f"  [warn] loki: {e}")
-        return None
+            print(f"  [warn] loki query failed ({tenant}): {e}")
+        return None  # actual query failure = truly unknown, renders as "--"
 
-    def tool_send_report(args):
-        subject   = args["subject"]
-        html_body = args["html_body"]
-        to_addrs  = _recipient_cache
-        if not to_addrs:
-            print("[reporter] no recipients — aborting")
-            sys.exit(1)
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"]    = SMTP_FROM
-        msg["To"]      = ", ".join(to_addrs)
-        msg.attach(MIMEText(html_body, "html"))
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
-            s.ehlo()
-            s.starttls()
-            s.login(SMTP_FROM, SMTP_PASS)
-            failed = s.sendmail(SMTP_FROM, to_addrs, msg.as_string())
-        if failed:
-            print(f"  [warn] partial delivery failure: {failed}")
-        print(f"[reporter] report sent to {len(to_addrs)} recipients")
-        sys.exit(0)
+    # ── Fixed, proven query set ────────────────────────────────────────────────────
+    # Placeholders use __NS__/__DUR__ (plain .replace(), not str.format()) because this file
+    # ships inside a Helm-templated ConfigMap — doubled curly braces here would be parsed by
+    # Helm's Go template engine as a template action, not left for Python to handle.
 
-    TOOL_DISPATCH = {
-        "list_grafana_orgs":      tool_list_grafana_orgs,
-        "list_all_grafana_users": tool_list_all_grafana_users,
-        "query_mimir":            tool_query_mimir,
-        "query_loki":             tool_query_loki,
-        "send_report":            tool_send_report,
+    MIMIR_QUERIES = {
+        "pods":            "sum(kube_pod_status_phase{namespace='__NS__',phase='Running'})",
+        "restarts":        "round(sum(increase(kube_pod_container_status_restarts_total{job='kube-state-metrics',namespace='__NS__'}[__DUR__s])))",
+        "cpu_reserved":    "sum(kube_pod_container_resource_requests{namespace='__NS__',resource='cpu'})",
+        "ram_reserved_gb": "sum(kube_pod_container_resource_requests{namespace='__NS__',resource='memory'})/1073741824",
+        "peak_cpu":        "max_over_time(sum(rate(container_cpu_usage_seconds_total{job='cadvisor',namespace='__NS__',container!='',container!='POD'}[5m]))[__DUR__s:5m])",
+        "peak_mem_gb":     "max_over_time(sum(container_memory_working_set_bytes{job='cadvisor',namespace='__NS__',container!='',container!='POD'})[__DUR__s:5m])/1073741824",
+        # Ingress-level request count (nginx_ingress_controller_requests) — only counts traffic that
+        # passes through the ingress controller, not internal service-to-service calls, and only
+        # populates once the ingress-nginx scrape target lands on the namespace's cluster Alloy.
+        "requests":        "round(sum(increase(nginx_ingress_controller_requests{namespace='__NS__'}[__DUR__s])))",
     }
 
-    # ── OpenAI tool schema ────────────────────────────────────────────────────────
+    LOKI_QUERIES = {
+        "log_lines":  'sum(count_over_time({namespace="__NS__"}[__DUR__s]))',
+        "log_gb":     'sum(bytes_over_time({namespace="__NS__"}[__DUR__s]))/1073741824',
+        "error_logs": 'sum(count_over_time({namespace="__NS__"} |~ "(?i)(error|fatal|panic)" [__DUR__s]))',
+        "warn_logs":  'sum(count_over_time({namespace="__NS__"} |~ "(?i)(warn|warning)" [__DUR__s]))',
+    }
 
-    TOOLS = [
-        {
-            "type": "function",
-            "function": {
-                "name": "list_grafana_orgs",
-                "description": "List all Grafana organizations (id=1 already excluded). Returns [{id, name}].",
-                "parameters": {"type": "object", "properties": {}, "required": []},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "list_all_grafana_users",
-                "description": "List all real Grafana user emails (admin@localhost already filtered). Returns [email].",
-                "parameters": {"type": "object", "properties": {}, "required": []},
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "query_mimir",
-                "description": "Run a PromQL instant query against Mimir. Returns float or null.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "promql":  {"type": "string", "description": "PromQL expression"},
-                        "cluster": {"type": "string", "description": "Tenant (cluster name, e.g. hub or spoke-1)"},
-                        "start":   {"type": "integer", "description": "Start Unix timestamp"},
-                        "end":     {"type": "integer", "description": "End Unix timestamp"},
-                    },
-                    "required": ["promql", "cluster", "start", "end"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "query_loki",
-                "description": "Run a LogQL metric query against Loki. Returns float or null.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "logql":  {"type": "string", "description": "LogQL expression"},
-                        "tenant": {"type": "string", "description": "Loki tenant e.g. hub-monitoring or spoke-1-myapp"},
-                        "start":  {"type": "integer", "description": "Start Unix timestamp"},
-                        "end":    {"type": "integer", "description": "End Unix timestamp"},
-                    },
-                    "required": ["logql", "tenant", "start", "end"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "send_report",
-                "description": "Send the final HTML report email to all Grafana users. Call as the LAST action.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "subject":   {"type": "string", "description": "Email subject line"},
-                        "html_body": {"type": "string", "description": "Full HTML email body"},
-                    },
-                    "required": ["subject", "html_body"],
-                },
-            },
-        },
-    ]
+    def render_query(tmpl, ns, dur):
+        return tmpl.replace("__NS__", ns).replace("__DUR__", str(dur))
 
-    # ── Prompts ───────────────────────────────────────────────────────────────────
+    def scrape_namespace(cluster, ns, org_name):
+        metrics = {}
+        for key, tmpl in MIMIR_QUERIES.items():
+            promql = render_query(tmpl, ns, PERIOD_DUR)
+            metrics[key] = query_mimir(promql, cluster, PERIOD_END)
+        for key, tmpl in LOKI_QUERIES.items():
+            logql = render_query(tmpl, ns, PERIOD_DUR)
+            metrics[key] = query_loki(logql, org_name, PERIOD_END)
+        print(f"  [scrape] {org_name} -> {metrics}")
+        return metrics
 
-    SYSTEM_PROMPT = (
-        "You are an infrastructure reporter. You have tools to query Prometheus (Mimir) "
-        "and Loki, and a tool to send an email report. "
-        "Always call send_report() as your final action."
+    def scrape_all(targets):
+        clusters = {}
+        for cluster, ns, org_name in targets:
+            namespaces = clusters.setdefault(cluster, {})
+            namespaces[ns] = scrape_namespace(cluster, ns, org_name)
+
+        data = {
+            "period": {
+                "label": PERIOD_LABEL,
+                "start": PERIOD_START,
+                "end":   PERIOD_END,
+                "days":  PERIOD_DUR // 86400,
+            },
+            "clusters": {},
+        }
+        for cluster, namespaces in clusters.items():
+            total_restarts   = sum(m["restarts"] or 0 for m in namespaces.values())
+            total_error_logs = sum(m["error_logs"] or 0 for m in namespaces.values())
+            total_requests   = sum(m["requests"] or 0 for m in namespaces.values())
+            data["clusters"][cluster] = {
+                "summary": {
+                    "namespace_count":  len(namespaces),
+                    "total_restarts":   total_restarts,
+                    "total_error_logs": total_error_logs,
+                    "total_requests":   total_requests,
+                },
+                "namespaces": namespaces,
+            }
+        return data
+
+    # ── AI insights (narrative only — never touches numbers or table layout) ─────
+
+    INSIGHTS_SYSTEM_PROMPT = (
+        "You are an infrastructure analyst producing insight commentary for a Kubernetes report. "
+        "You will receive exact, pre-computed metrics per namespace for one or more clusters, covering "
+        "a fixed reporting period. These numbers are already correct and final — never recompute, "
+        "restate with different precision, or invent any figure. Identify only operationally meaningful "
+        "patterns already present in the given data: unusually high error-to-log-line ratios, restart "
+        "spikes, CPU/RAM usage close to or exceeding reserved capacity, large gaps between reserved and "
+        "peak usage, elevated log volume. Respond with strict JSON only: an object whose keys are "
+        "exactly the cluster names given in the input and whose values are arrays of 2 to 4 short "
+        "plain-text bullet strings — no markdown, no HTML, no code fences, no keys absent from the "
+        "input. If nothing notable stands out for a cluster, return an empty array for it."
     )
 
-    USER_PROMPT = (
-        f"Generate the monthly infrastructure report for {MONTH_LABEL}.\n"
-        f"Reporting period: Unix {MONTH_START} to {MONTH_END} (duration: {MONTH_DUR}s).\n"
-        f"Grafana dashboard link for the footer: {GRAFANA_EXT_URL}/dashboards\n"
-        "\n"
-        "Steps:\n"
-        "1. Call list_grafana_orgs() — returns all namespace orgs already filtered.\n"
-        "2. Call list_all_grafana_users() — returns the recipient list.\n"
-        "3. For each org (name format: 'cluster-namespace'):\n"
-        "   - cluster prefix: the text before the first '-' in the org name\n"
-        "     (e.g. 'hub' for 'hub-monitoring', 'spoke-1' for 'spoke-1-myapp')\n"
-        "   - Query Mimir (X-Scope-OrgID = cluster) for these metrics using start/end from above:\n"
-        "     * Total requests: sum(increase(traces_spanmetrics_calls_total{namespace='NS'}[DURs]))\n"
-        "     * Total errors: sum(increase(traces_spanmetrics_calls_total{namespace='NS',status_code='STATUS_CODE_ERROR'}[DURs]))\n"
-        "     * p95 latency ms: histogram_quantile(0.95, sum by(le)(rate(traces_spanmetrics_duration_seconds_bucket{namespace='NS'}[DURs]))) * 1000\n"
-        "     * Avg CPU cores: avg_over_time(sum(rate(container_cpu_usage_seconds_total{container!='',namespace='NS'}[5m]))[DURs:5m])\n"
-        "     * Avg RAM GB: avg_over_time(sum(container_memory_working_set_bytes{container!='',namespace='NS'})[DURs:5m]) / 1073741824\n"
-        "   - Query Loki (tenant = 'cluster-namespace') for:\n"
-        "     * Log lines: sum(count_over_time({namespace='NS'}[DURs]))\n"
-        "     * Log GB: sum(bytes_over_time({namespace='NS'}[DURs])) / 1073741824\n"
-        f"   - Replace DUR with {MONTH_DUR}s and NS with the actual namespace name.\n"
-        "   - Skip namespaces where all queried metrics are null or zero.\n"
-        "4. Build ONE professional HTML email:\n"
-        "   - Dark blue header with report title and month\n"
-        "   - Summary table: all active namespaces, columns: Namespace, Req/s, Error%, p95ms, CPU, RAM\n"
-        "   - Per-namespace section: metrics table + status badge + 2-3 sentence analysis\n"
-        "   - Status: Healthy (<1% errors), Warning (1-5%), Critical (>5%), Unknown (no trace data)\n"
-        "   - Footer with generation timestamp and Grafana link\n"
-        "5. Call send_report(subject, html_body).\n"
-    )
-
-    # ── OpenAI agentic loop ───────────────────────────────────────────────────────
-
-    def openai_chat(messages):
-        """POST to OpenAI with retry on 429 — handles free-tier rate limits."""
+    def openai_chat(messages, max_tokens=1024):
+        """Single-shot POST to OpenAI (no tools/function-calling) with retry on 429 and ReadTimeout."""
         for attempt in range(6):
-            resp = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
-                         "Content-Type": "application/json"},
-                json={"model": "gpt-4o-mini", "max_tokens": 8192,
-                      "tools": TOOLS, "messages": messages},
-                timeout=120,
-            ).json()
+            try:
+                resp = requests.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}",
+                             "Content-Type": "application/json"},
+                    json={"model": OPENAI_MODEL, "max_tokens": max_tokens, "messages": messages},
+                    timeout=120,
+                ).json()
+            except requests.exceptions.ReadTimeout:
+                wait = 30 * (attempt + 1)
+                print(f"  [timeout] OpenAI timed out, retrying in {wait}s (attempt {attempt + 1})")
+                time.sleep(wait)
+                continue
             if "error" in resp and resp.get("error", {}).get("code") == "rate_limit_exceeded":
                 wait = 20 * (attempt + 1)
                 print(f"  [rate_limit] waiting {wait}s (attempt {attempt + 1})")
@@ -299,40 +285,187 @@ data:
                 continue
             if "error" in resp:
                 print(f"[reporter] OpenAI error: {resp['error']}")
-                sys.exit(1)
+                return None
             return resp
-        raise RuntimeError("OpenAI rate limit persists after retries")
+        print("[reporter] OpenAI retries exhausted (rate limit / timeout) — continuing without insights")
+        return None
+
+    def get_ai_insights(data):
+        payload = json.dumps(data, separators=(",", ":"))
+        messages = [
+            {"role": "system", "content": INSIGHTS_SYSTEM_PROMPT},
+            {"role": "user", "content": f"Reporting period: {data['period']['label']}.\nData:\n{payload}"},
+        ]
+        for attempt in range(2):
+            resp = openai_chat(messages)
+            if resp is None:
+                break
+            content = resp["choices"][0]["message"]["content"]
+            try:
+                insights = json.loads(content)
+                if isinstance(insights, dict):
+                    return insights
+            except (json.JSONDecodeError, TypeError):
+                pass
+            print(f"  [warn] AI insights response was not valid JSON (attempt {attempt + 1})")
+            messages.append({"role": "assistant", "content": content})
+            messages.append({"role": "user",
+                              "content": "Your previous response was not valid JSON. "
+                                         "Respond with ONLY the JSON object, no other text."})
+        print("  [warn] AI insights unavailable — report will send without them")
+        return {}
+
+    # ── Deterministic HTML rendering (no AI involvement) ──────────────────────────
+
+    def fmt_int(v):
+        return "--" if v is None else f"{int(round(v)):,}"
+
+    def fmt_cores(v):
+        return "--" if v is None else f"{v:.2f} cores"
+
+    def fmt_gb(v):
+        return "--" if v is None else f"{v:.2f} GB"
+
+    def render_html(data, insights):
+        period = data["period"]
+        start_h = datetime.fromtimestamp(period["start"], tz=timezone.utc).strftime("%b %d, %Y")
+        end_h   = datetime.fromtimestamp(period["end"], tz=timezone.utc).strftime("%b %d, %Y")
+
+        cluster_summary_rows = ""
+        insights_html = ""
+        summary_rows = []
+        namespace_sections = []
+
+        for cluster, cdata in sorted(data["clusters"].items()):
+            s = cdata["summary"]
+            cluster_summary_rows += (
+                f"<tr><td>{cluster.upper()}</td><td>{s['namespace_count']}</td>"
+                f"<td>{fmt_int(s['total_requests'])}</td>"
+                f"<td>{fmt_int(s['total_restarts'])}</td><td>{fmt_int(s['total_error_logs'])}</td></tr>"
+            )
+            bullets = insights.get(cluster, [])
+            if bullets:
+                items = "".join(f"<li>{b}</li>" for b in bullets)
+                insights_html += f"<h3>{cluster.upper()} — Key Observations</h3><ul>{items}</ul>"
+
+            for ns, m in cdata["namespaces"].items():
+                restarts = m["restarts"] or 0
+                error_logs = m["error_logs"] or 0
+                restart_style = ' style="background:#f8d7da"' if restarts > 20 else \
+                                (' style="background:#fff3cd"' if restarts > 5 else "")
+                error_style = ' style="background:#fff3cd"' if error_logs > 0 else ""
+
+                summary_rows.append((
+                    error_logs, restarts,
+                    f"<tr><td>{ns}</td><td>{cluster.upper()}</td><td>{fmt_int(m['pods'])}</td>"
+                    f"<td>{fmt_int(m['requests'])}</td>"
+                    f"<td{restart_style}>{fmt_int(m['restarts'])}</td>"
+                    f"<td>{fmt_cores(m['cpu_reserved'])}</td><td>{fmt_gb(m['ram_reserved_gb'])}</td>"
+                    f"<td>{fmt_cores(m['peak_cpu'])}</td><td>{fmt_gb(m['peak_mem_gb'])}</td>"
+                    f"<td{error_style}>{fmt_int(m['error_logs'])}</td><td>{fmt_int(m['warn_logs'])}</td>"
+                    f"<td>{fmt_int(m['log_lines'])}</td><td>{fmt_gb(m['log_gb'])}</td></tr>"
+                ))
+
+                namespace_sections.append(
+                    f"<h3>{ns} <span style=\"font-weight:normal;color:#555\">[{cluster.upper()}]</span></h3>"
+                    "<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\">"
+                    "<tr><th>Metric</th><th>Value</th></tr>"
+                    f"<tr><td>Pods</td><td>{fmt_int(m['pods'])}</td></tr>"
+                    f"<tr><td>Requests</td><td>{fmt_int(m['requests'])}</td></tr>"
+                    f"<tr><td>Restarts</td><td>{fmt_int(m['restarts'])}</td></tr>"
+                    f"<tr><td>CPU Reserved</td><td>{fmt_cores(m['cpu_reserved'])}</td></tr>"
+                    f"<tr><td>RAM Reserved</td><td>{fmt_gb(m['ram_reserved_gb'])}</td></tr>"
+                    f"<tr><td>Peak CPU</td><td>{fmt_cores(m['peak_cpu'])}</td></tr>"
+                    f"<tr><td>Peak Mem</td><td>{fmt_gb(m['peak_mem_gb'])}</td></tr>"
+                    f"<tr><td>Error Logs</td><td>{fmt_int(m['error_logs'])}</td></tr>"
+                    f"<tr><td>Warn Logs</td><td>{fmt_int(m['warn_logs'])}</td></tr>"
+                    f"<tr><td>Log Lines</td><td>{fmt_int(m['log_lines'])}</td></tr>"
+                    f"<tr><td>Log GB</td><td>{fmt_gb(m['log_gb'])}</td></tr>"
+                    "</table>"
+                )
+
+        summary_rows.sort(key=lambda t: (-t[0], -t[1]))
+        summary_table_rows = "".join(r[2] for r in summary_rows)
+
+        return f"""
+    <html><body style="font-family:Arial,sans-serif;color:#222">
+      <div style="background:#0b3d91;color:#fff;padding:16px 24px">
+        <h1 style="margin:0">Infrastructure Report</h1>
+        <p style="margin:4px 0 0">Period: {period['label']}</p>
+      </div>
+      <p><strong>Reporting Period:</strong> {start_h} &ndash; {end_h} ({period['days']} days)</p>
+
+      <h2>Cluster Summary</h2>
+      <table border="1" cellpadding="6" cellspacing="0">
+        <tr><th>Cluster</th><th>Namespace Count</th><th>Total Requests</th><th>Total Pod Restarts</th><th>Total Error Logs</th></tr>
+        {cluster_summary_rows}
+      </table>
+
+      {insights_html}
+
+      <h2>Summary Table</h2>
+      <table border="1" cellpadding="6" cellspacing="0">
+        <tr><th>Namespace</th><th>Cluster</th><th>Pods</th><th>Requests</th><th>Restarts</th><th>CPU Reserved</th>
+            <th>RAM Reserved</th><th>Peak CPU</th><th>Peak Mem</th><th>Error Logs</th><th>Warn Logs</th>
+            <th>Log Lines</th><th>Log GB</th></tr>
+        {summary_table_rows}
+      </table>
+
+      <h2>Per-Namespace Sections</h2>
+      {''.join(namespace_sections)}
+
+      <p style="color:#777;font-size:12px">Generated {GENERATION_TS} &middot;
+        <a href="{GRAFANA_EXT_URL}/dashboards">Grafana dashboards</a></p>
+    </body></html>
+    """
+
+    # ── Email send ─────────────────────────────────────────────────────────────────
+
+    def send_email(subject, html_body, recipients):
+        if not recipients:
+            print("[reporter] no recipients — aborting")
+            sys.exit(1)
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"]    = SMTP_FROM
+        msg["To"]      = ", ".join(recipients)
+        msg.attach(MIMEText(html_body, "html"))
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
+            s.ehlo()
+            s.starttls()
+            s.login(SMTP_FROM, SMTP_PASS)
+            failed = s.sendmail(SMTP_FROM, recipients, msg.as_string())
+        if failed:
+            print(f"  [warn] partial delivery failure: {failed}")
+        print(f"[reporter] report sent to {len(recipients)} recipients")
+
+    # ── Main ───────────────────────────────────────────────────────────────────────
 
     def main():
-        print(f"[reporter] starting agentic reporter for {MONTH_LABEL}")
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": USER_PROMPT},
-        ]
-        iterations = 0
-        while iterations < 200:
-            iterations += 1
-            resp   = openai_chat(messages)
-            choice = resp["choices"][0]
-            msg    = choice["message"]
-            messages.append(msg)
+        print(f"[reporter] starting deterministic reporter for {PERIOD_LABEL}")
 
-            if choice["finish_reason"] == "stop":
-                print("[reporter] AI finished without calling send_report — exiting")
-                sys.exit(1)
+        targets = discover_targets()
+        if not targets:
+            print("[reporter] no target namespaces found — nothing to report")
+            sys.exit(1)
 
-            for tc in msg.get("tool_calls", []):
-                fn_name = tc["function"]["name"]
-                fn_args = json.loads(tc["function"]["arguments"])
-                print(f"  [tool] {fn_name}({list(fn_args.keys())})")
-                result = TOOL_DISPATCH[fn_name](fn_args)
-                messages.append({
-                    "role":         "tool",
-                    "tool_call_id": tc["id"],
-                    "content":      json.dumps(result),
-                })
+        data = scrape_all(targets)
 
-        print("[reporter] iteration limit reached — exiting")
-        sys.exit(1)
+        data_file = f"/tmp/infra-report-{PERIOD_LABEL.replace(' ', '_')}.json"
+        with open(data_file, "w") as f:
+            json.dump(data, f, indent=2)
+        print(f"[reporter] wrote scraped data to {data_file}:")
+        print(json.dumps(data, indent=2))
 
-    main()
+        insights = get_ai_insights(data)
+
+        if TEST_RECIPIENTS:
+            recipients = [r.strip() for r in TEST_RECIPIENTS.split(",")]
+            print(f"[reporter] [test] recipients overridden to: {recipients}")
+        else:
+            recipients = list_all_grafana_users()
+        html = render_html(data, insights)
+        send_email(f"Infrastructure Report — {PERIOD_LABEL}", html, recipients)
+
+    if __name__ == "__main__":
+        main()

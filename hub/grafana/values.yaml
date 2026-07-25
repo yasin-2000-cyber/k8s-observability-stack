@@ -48,6 +48,13 @@ resources:
 #     --from-literal=DB_PASSWORD=<your-db-password>
 envFromSecret: monitoring-grafana-secret
 
+# SMTP_PASSWORD sourced from the same secret Alertmanager uses (created out-of-band, not in git)
+envValueFrom:
+  SMTP_PASSWORD:
+    secretKeyRef:
+      name: monitoring-alertmanager-credentials
+      key: SMTP_PASSWORD
+
 # ── Grafana configuration ─────────────────────────────────────────────────────
 grafana.ini:
   server:
@@ -88,6 +95,7 @@ grafana.ini:
     # Restrict login to specific Azure AD group OIDs (comma-separated).
     # Find group OIDs in Azure AD → Groups → your group → Object ID.
     allowed_groups: "<AZURE_AD_GROUP_OID_1>,<AZURE_AD_GROUP_OID_2>"
+    org_mapping: ""
     role_attribute_path: ""
     role_attribute_strict: false
     allow_assign_grafana_admin: true
@@ -104,6 +112,17 @@ grafana.ini:
     auto_assign_org_id: 1
     auto_assign_org_role: Viewer
     viewers_can_edit: false
+
+  # Grafana's own SMTP delivery (separate from Alertmanager's) — used for report/alert
+  # emails sent directly by Grafana rather than routed through Alertmanager.
+  smtp:
+    enabled: true
+    host: smtp.office365.com:587       # replace with your SMTP server
+    user: alerts@example.com           # replace with your SMTP username
+    password: ${SMTP_PASSWORD}
+    from_address: alerts@example.com   # replace with your sender address
+    from_name: Grafana Alerts
+    startTLS_policy: MandatoryStartTLS
 
   unified_alerting:
     enabled: true
@@ -221,6 +240,7 @@ sidecar:
     folderAnnotation: grafana_folder
     provider:
       allowUiUpdates: true
+      foldersFromFilesStructure: true
   datasources:
     enabled: false
 
@@ -266,16 +286,16 @@ alerting:
             labels:
               severity: warning
             annotations:
-              summary: "Node CPU above 85%"
-              description: "CPU usage exceeded 85% threshold — check node-level workloads"
+              summary: 'Node CPU High: {{ "{{" }} $labels.cluster {{ "}}" }} / {{ "{{" }} $labels.node {{ "}}" }}'
+              description: 'Cluster: {{ "{{" }} $labels.cluster {{ "}}" }} | Node: {{ "{{" }} $labels.node {{ "}}" }} — CPU usage exceeded 85%, check node-level workloads'
             data:
               - refId: A
                 relativeTimeRange: {from: 600, to: 0}
                 datasourceUid: mimir
                 model:
-                  expr: '1 - avg by (node) (rate(node_cpu_seconds_total{mode="idle"}[5m]))'
-                  instant: false
-                  range: true
+                  expr: '1 - avg by (cluster, node) (rate(node_cpu_seconds_total{mode="idle"}[5m]))'
+                  instant: true
+                  range: false
                   refId: A
               - refId: C
                 relativeTimeRange: {from: 0, to: 0}
@@ -299,16 +319,16 @@ alerting:
             labels:
               severity: warning
             annotations:
-              summary: "Node memory above 90%"
-              description: "Memory usage exceeded 90% threshold — consider evicting or rescheduling pods"
+              summary: 'Node Memory High: {{ "{{" }} $labels.cluster {{ "}}" }} / {{ "{{" }} $labels.instance {{ "}}" }}'
+              description: 'Cluster: {{ "{{" }} $labels.cluster {{ "}}" }} | Instance: {{ "{{" }} $labels.instance {{ "}}" }} — Memory usage exceeded 90%, consider evicting or rescheduling pods'
             data:
               - refId: A
                 relativeTimeRange: {from: 600, to: 0}
                 datasourceUid: mimir
                 model:
                   expr: '1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)'
-                  instant: false
-                  range: true
+                  instant: true
+                  range: false
                   refId: A
               - refId: C
                 relativeTimeRange: {from: 0, to: 0}
@@ -332,16 +352,16 @@ alerting:
             labels:
               severity: warning
             annotations:
-              summary: "Node disk above 80%"
-              description: "Disk usage exceeded 80% threshold — check mountpoint usage"
+              summary: 'Node Disk High: {{ "{{" }} $labels.cluster {{ "}}" }} / {{ "{{" }} $labels.instance {{ "}}" }}'
+              description: 'Cluster: {{ "{{" }} $labels.cluster {{ "}}" }} | Instance: {{ "{{" }} $labels.instance {{ "}}" }} — Disk usage exceeded 80%, check mountpoint usage and clean up'
             data:
               - refId: A
                 relativeTimeRange: {from: 600, to: 0}
                 datasourceUid: mimir
                 model:
                   expr: '1 - (node_filesystem_avail_bytes{fstype!="tmpfs",fstype!="overlay"} / node_filesystem_size_bytes{fstype!="tmpfs",fstype!="overlay"})'
-                  instant: false
-                  range: true
+                  instant: true
+                  range: false
                   refId: A
               - refId: C
                 relativeTimeRange: {from: 0, to: 0}
@@ -365,16 +385,16 @@ alerting:
             labels:
               severity: critical
             annotations:
-              summary: "Node Not Ready"
-              description: "A Kubernetes node has been NotReady for more than 2 minutes"
+              summary: 'Node Not Ready: {{ "{{" }} $labels.cluster {{ "}}" }} / {{ "{{" }} $labels.node {{ "}}" }}'
+              description: 'Cluster: {{ "{{" }} $labels.cluster {{ "}}" }} | Node: {{ "{{" }} $labels.node {{ "}}" }} — NotReady for 2m, check kubelet and node health'
             data:
               - refId: A
                 relativeTimeRange: {from: 300, to: 0}
                 datasourceUid: mimir
                 model:
-                  expr: 'kube_node_status_condition{condition="Ready",status="true"} == 0'
-                  instant: false
-                  range: true
+                  expr: 'kube_node_status_condition{condition="Ready",status="true"}'
+                  instant: true
+                  range: false
                   refId: A
               - refId: C
                 relativeTimeRange: {from: 0, to: 0}
@@ -384,7 +404,7 @@ alerting:
                   refId: C
                   expression: A
                   conditions:
-                    - evaluator: {params: [0], type: gt}
+                    - evaluator: {params: [1], type: lt}
                       operator: {type: and}
                       query: {params: [A]}
                       reducer: {params: [], type: last}
@@ -404,16 +424,16 @@ alerting:
             labels:
               severity: warning
             annotations:
-              summary: "Pod CrashLoopBackOff"
-              description: "A container has been in CrashLoopBackOff for more than 5 minutes"
+              summary: 'Pod CrashLoopBackOff: {{ "{{" }} $labels.pod {{ "}}" }} ({{ "{{" }} $labels.namespace {{ "}}" }})'
+              description: 'Cluster: {{ "{{" }} $labels.cluster {{ "}}" }} | Namespace: {{ "{{" }} $labels.namespace {{ "}}" }} | Pod: {{ "{{" }} $labels.pod {{ "}}" }} — CrashLoopBackOff for 5m, check pod logs'
             data:
               - refId: A
                 relativeTimeRange: {from: 600, to: 0}
                 datasourceUid: mimir
                 model:
                   expr: 'kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"}'
-                  instant: false
-                  range: true
+                  instant: true
+                  range: false
                   refId: A
               - refId: C
                 relativeTimeRange: {from: 0, to: 0}
@@ -438,15 +458,15 @@ alerting:
               severity: warning
             annotations:
               summary: 'Pod OOMKilled: {{ "{{" }} $labels.pod {{ "}}" }} ({{ "{{" }} $labels.namespace {{ "}}" }})'
-              description: 'Cluster: {{ "{{" }} $labels.cluster {{ "}}" }} | Namespace: {{ "{{" }} $labels.namespace {{ "}}" }} | Pod: {{ "{{" }} $labels.pod {{ "}}" }} — Container was killed due to out-of-memory. Increase memory limits or check for memory leaks.'
+              description: 'Cluster: {{ "{{" }} $labels.cluster {{ "}}" }} | Namespace: {{ "{{" }} $labels.namespace {{ "}}" }} | Pod: {{ "{{" }} $labels.pod {{ "}}" }} | Container: {{ "{{" }} $labels.container {{ "}}" }} — Container was killed due to out-of-memory. Increase memory limits or check for memory leaks.'
             data:
               - refId: A
                 relativeTimeRange: {from: 300, to: 0}
                 datasourceUid: mimir
                 model:
                   expr: 'kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}'
-                  instant: false
-                  range: true
+                  instant: true
+                  range: false
                   refId: A
               - refId: C
                 relativeTimeRange: {from: 0, to: 0}
@@ -470,16 +490,16 @@ alerting:
             labels:
               severity: warning
             annotations:
-              summary: "Pod Pending Too Long"
-              description: "A pod has been in Pending state for more than 5 minutes"
+              summary: 'Pod Pending: {{ "{{" }} $labels.pod {{ "}}" }} ({{ "{{" }} $labels.namespace {{ "}}" }})'
+              description: 'Cluster: {{ "{{" }} $labels.cluster {{ "}}" }} | Namespace: {{ "{{" }} $labels.namespace {{ "}}" }} | Pod: {{ "{{" }} $labels.pod {{ "}}" }} — Pending for 5m, check node resources or PVC binding'
             data:
               - refId: A
                 relativeTimeRange: {from: 600, to: 0}
                 datasourceUid: mimir
                 model:
                   expr: 'kube_pod_status_phase{phase="Pending"}'
-                  instant: false
-                  range: true
+                  instant: true
+                  range: false
                   refId: A
               - refId: C
                 relativeTimeRange: {from: 0, to: 0}
@@ -504,15 +524,15 @@ alerting:
               severity: warning
             annotations:
               summary: 'Pod Image Pull Error: {{ "{{" }} $labels.pod {{ "}}" }} ({{ "{{" }} $labels.namespace {{ "}}" }})'
-              description: 'Cluster: {{ "{{" }} $labels.cluster {{ "}}" }} | Pod: {{ "{{" }} $labels.pod {{ "}}" }} — Check image name/tag and registry credentials.'
+              description: 'Cluster: {{ "{{" }} $labels.cluster {{ "}}" }} | Namespace: {{ "{{" }} $labels.namespace {{ "}}" }} | Pod: {{ "{{" }} $labels.pod {{ "}}" }} | Container: {{ "{{" }} $labels.container {{ "}}" }} | Reason: {{ "{{" }} $labels.reason {{ "}}" }} — Check image name/tag and registry credentials. Verify the image exists and the pull secret is correct.'
             data:
               - refId: A
                 relativeTimeRange: {from: 300, to: 0}
                 datasourceUid: mimir
                 model:
                   expr: 'kube_pod_container_status_waiting_reason{reason=~"ImagePullBackOff|ErrImagePull"}'
-                  instant: false
-                  range: true
+                  instant: true
+                  range: false
                   refId: A
               - refId: C
                 relativeTimeRange: {from: 0, to: 0}
@@ -527,7 +547,43 @@ alerting:
                       query: {params: [A]}
                       reducer: {params: [], type: last}
 
+          - uid: k8s-pod-restart-rate
+            title: "Pod Restart Rate High"
+            condition: C
+            noDataState: NoData
+            execErrState: Error
+            for: 1m
+            labels:
+              severity: warning
+            annotations:
+              summary: 'High Restart Rate: {{ "{{" }} $labels.cluster {{ "}}" }} / {{ "{{" }} $labels.namespace {{ "}}" }} / {{ "{{" }} $labels.pod {{ "}}" }}'
+              description: 'Cluster: {{ "{{" }} $labels.cluster {{ "}}" }} | Namespace: {{ "{{" }} $labels.namespace {{ "}}" }} | Pod: {{ "{{" }} $labels.pod {{ "}}" }} — more than 3 restarts in 15 minutes. Likely entering CrashLoopBackOff, check pod logs immediately.'
+            data:
+              - refId: A
+                relativeTimeRange: {from: 900, to: 0}
+                datasourceUid: mimir
+                model:
+                  expr: 'sum by (cluster, namespace, pod) (increase(kube_pod_container_status_restarts_total[15m]))'
+                  instant: true
+                  range: false
+                  refId: A
+              - refId: C
+                relativeTimeRange: {from: 0, to: 0}
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  refId: C
+                  expression: A
+                  conditions:
+                    - evaluator: {params: [3], type: gt}
+                      operator: {type: and}
+                      query: {params: [A]}
+                      reducer: {params: [], type: last}
+
       # ── Monitoring Stack Self-Health ─────────────────────────────────────────
+      # Uses kube-state-metrics deployment/statefulset availability rather than an
+      # `up{job=~"..."}` scrape check — Mimir/Loki/Tempo aren't scraped under those
+      # job names, so that pattern silently matches nothing and never fires.
       - orgId: 1
         name: monitoring-stack
         folder: Infrastructure
@@ -543,15 +599,15 @@ alerting:
               severity: critical
             annotations:
               summary: "Mimir Down"
-              description: "Mimir scrape target has been unreachable for more than 2 minutes"
+              description: "mimir-distributor deployment has unavailable replicas for 2m — Mimir metrics ingestion may be degraded"
             data:
               - refId: A
                 relativeTimeRange: {from: 300, to: 0}
                 datasourceUid: mimir
                 model:
-                  expr: 'up{job=~"mimir.*"} == 0'
-                  instant: false
-                  range: true
+                  expr: 'max(kube_deployment_status_replicas_unavailable{deployment="mimir-distributor",namespace="monitoring"})'
+                  instant: true
+                  range: false
                   refId: A
               - refId: C
                 relativeTimeRange: {from: 0, to: 0}
@@ -576,15 +632,15 @@ alerting:
               severity: critical
             annotations:
               summary: "Loki Down"
-              description: "Loki scrape target has been unreachable for more than 2 minutes"
+              description: "loki-gateway deployment has unavailable replicas for 2m — log ingestion or querying may be down"
             data:
               - refId: A
                 relativeTimeRange: {from: 300, to: 0}
                 datasourceUid: mimir
                 model:
-                  expr: 'up{job=~"loki.*"} == 0'
-                  instant: false
-                  range: true
+                  expr: 'max(kube_deployment_status_replicas_unavailable{deployment="loki-gateway",namespace="monitoring"})'
+                  instant: true
+                  range: false
                   refId: A
               - refId: C
                 relativeTimeRange: {from: 0, to: 0}
@@ -609,15 +665,15 @@ alerting:
               severity: critical
             annotations:
               summary: "Tempo Down"
-              description: "Tempo scrape target has been unreachable for more than 2 minutes"
+              description: "Tempo StatefulSet has no ready replicas for 2m — trace ingestion and querying is down"
             data:
               - refId: A
                 relativeTimeRange: {from: 300, to: 0}
                 datasourceUid: mimir
                 model:
-                  expr: 'up{job=~"tempo.*"} == 0'
-                  instant: false
-                  range: true
+                  expr: 'min(kube_statefulset_status_replicas_ready{statefulset="tempo",namespace="monitoring"})'
+                  instant: true
+                  range: false
                   refId: A
               - refId: C
                 relativeTimeRange: {from: 0, to: 0}
@@ -627,19 +683,23 @@ alerting:
                   refId: C
                   expression: A
                   conditions:
-                    - evaluator: {params: [0], type: gt}
+                    - evaluator: {params: [1], type: lt}
                       operator: {type: and}
                       query: {params: [A]}
                       reducer: {params: [], type: last}
 
-      # ── Alloy Collector Health ───────────────────────────────────────────────
+      # ── Cluster Telemetry Health ─────────────────────────────────────────────
+      # Detects loss of metrics scraping per cluster. Proxy metric: if the cluster's
+      # Alloy agent stops, node-exporter targets go absent/down — a direct
+      # absent(up{job="..."}) check is unreliable since that job name may never
+      # have existed as a distinct scrape target.
       - orgId: 1
         name: alloy-health
         folder: Infrastructure
         interval: 1m
         rules:
-          - uid: hub-alloy-absent
-            title: "hub-alloy Scrape Missing"
+          - uid: hub-telemetry-lost
+            title: "Hub Telemetry Lost"
             condition: C
             noDataState: Alerting
             execErrState: Alerting
@@ -647,16 +707,16 @@ alerting:
             labels:
               severity: warning
             annotations:
-              summary: "hub-alloy metrics have disappeared"
-              description: "No scrape data from hub-alloy for 5 minutes — check DaemonSet on hub cluster"
+              summary: 'Hub metrics collection stopped'
+              description: 'Cluster: hub — node-exporter scrape targets are down or absent. Check hub-alloy DaemonSet in the monitoring namespace on the hub cluster.'
             data:
               - refId: A
                 relativeTimeRange: {from: 600, to: 0}
                 datasourceUid: mimir
                 model:
-                  expr: 'absent(up{job="hub-alloy"})'
-                  instant: false
-                  range: true
+                  expr: 'min(up{job="node-exporter",cluster="hub"})'
+                  instant: true
+                  range: false
                   refId: A
               - refId: C
                 relativeTimeRange: {from: 0, to: 0}
@@ -666,14 +726,14 @@ alerting:
                   refId: C
                   expression: A
                   conditions:
-                    - evaluator: {params: [0], type: gt}
+                    - evaluator: {params: [1], type: lt}
                       operator: {type: and}
                       query: {params: [A]}
                       reducer: {params: [], type: last}
 
-          # Add one entry per spoke cluster — update the job name to match your spoke Alloy deployment
-          - uid: spoke-alloy-absent
-            title: "spoke-alloy Scrape Missing"
+          # Add one entry per spoke cluster — update the cluster label to match your spoke
+          - uid: spoke-1-telemetry-lost
+            title: "spoke-1 Telemetry Lost"
             condition: C
             noDataState: Alerting
             execErrState: Alerting
@@ -681,16 +741,16 @@ alerting:
             labels:
               severity: warning
             annotations:
-              summary: "spoke-alloy metrics have disappeared"
-              description: "No scrape data from spoke-alloy for 5 minutes — check DaemonSet on spoke cluster"
+              summary: 'spoke-1 metrics collection stopped'
+              description: 'Cluster: spoke-1 — node-exporter scrape targets are down or absent. Check spoke-alloy DaemonSet on that cluster.'
             data:
               - refId: A
                 relativeTimeRange: {from: 600, to: 0}
                 datasourceUid: mimir
                 model:
-                  expr: 'absent(up{job="spoke-alloy"})'   # update job name to match your deployment
-                  instant: false
-                  range: true
+                  expr: 'min(up{job="node-exporter",cluster="spoke-1"})'   # update cluster label to match your deployment
+                  instant: true
+                  range: false
                   refId: A
               - refId: C
                 relativeTimeRange: {from: 0, to: 0}
@@ -700,7 +760,85 @@ alerting:
                   refId: C
                   expression: A
                   conditions:
-                    - evaluator: {params: [0], type: gt}
+                    - evaluator: {params: [1], type: lt}
+                      operator: {type: and}
+                      query: {params: [A]}
+                      reducer: {params: [], type: last}
+
+      # ── Application Error Alerts ─────────────────────────────────────────────
+      # Dynamic — covers any service exposing http_server_requests_seconds (Micrometer/Spring Boot).
+      # Add an equivalent group for other frameworks' request-duration metrics if needed.
+      - orgId: 1
+        name: app-errors
+        folder: Applications
+        interval: 1m
+        rules:
+          - uid: app-high-error-rate
+            title: "App High Error Rate (>5%)"
+            condition: C
+            # OK, not NoData: bursty traffic can legitimately leave the 5m rate() window
+            # empty during quiet periods. NoData would otherwise fire a notification on
+            # every gap; the rule still fires normally the moment real >5% error data appears.
+            noDataState: OK
+            execErrState: Error
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: 'High Error Rate: {{ "{{" }} $labels.cluster {{ "}}" }} / {{ "{{" }} $labels.namespace {{ "}}" }} / {{ "{{" }} $labels.service {{ "}}" }}'
+              description: 'HTTP 5xx error rate exceeded 5% for 5 minutes. Cluster: {{ "{{" }} $labels.cluster {{ "}}" }} | Namespace: {{ "{{" }} $labels.namespace {{ "}}" }} | Service: {{ "{{" }} $labels.service {{ "}}" }} — Check application logs and recent deployments.'
+            data:
+              - refId: A
+                relativeTimeRange: {from: 600, to: 0}
+                datasourceUid: mimir
+                model:
+                  expr: '(sum by (cluster, namespace, service) (rate(http_server_requests_seconds_count{status=~"5.."}[5m])) or 0 * sum by (cluster, namespace, service) (rate(http_server_requests_seconds_count[5m]))) / (sum by (cluster, namespace, service) (rate(http_server_requests_seconds_count[5m])) > 0)'
+                  instant: true
+                  range: false
+                  refId: A
+              - refId: C
+                relativeTimeRange: {from: 0, to: 0}
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  refId: C
+                  expression: A
+                  conditions:
+                    - evaluator: {params: [0.05], type: gt}
+                      operator: {type: and}
+                      query: {params: [A]}
+                      reducer: {params: [], type: last}
+
+          - uid: app-high-latency
+            title: "App High Latency p99 (>2s)"
+            condition: C
+            # OK, not NoData: same bursty-traffic reasoning as app-high-error-rate above.
+            noDataState: OK
+            execErrState: Error
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: 'High Latency p99: {{ "{{" }} $labels.cluster {{ "}}" }} / {{ "{{" }} $labels.namespace {{ "}}" }} / {{ "{{" }} $labels.service {{ "}}" }}'
+              description: 'p99 response time exceeded 2 seconds for 5 minutes. Cluster: {{ "{{" }} $labels.cluster {{ "}}" }} | Namespace: {{ "{{" }} $labels.namespace {{ "}}" }} | Service: {{ "{{" }} $labels.service {{ "}}" }} — Profile the service and check for slow database queries or resource contention.'
+            data:
+              - refId: A
+                relativeTimeRange: {from: 600, to: 0}
+                datasourceUid: mimir
+                model:
+                  expr: 'histogram_quantile(0.99, sum by (cluster, namespace, service, le) (rate(http_server_requests_seconds_bucket{}[5m]))) * 1000'
+                  instant: true
+                  range: false
+                  refId: A
+              - refId: C
+                relativeTimeRange: {from: 0, to: 0}
+                datasourceUid: __expr__
+                model:
+                  type: threshold
+                  refId: C
+                  expression: A
+                  conditions:
+                    - evaluator: {params: [2000], type: gt}
                       operator: {type: and}
                       query: {params: [A]}
                       reducer: {params: [], type: last}
