@@ -32,6 +32,19 @@ data:
             "sort": 1
           },
           {
+            "name": "namespace",
+            "label": "Namespace",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "query": "label_values(kube_pod_info{job=\"kube-state-metrics\",cluster=~\"$cluster\"}, namespace)",
+            "description": "Not used by this node-level dashboard's own panels (node_uname_info/node metrics have no namespace label) - kept here for filter consistency across dashboards.",
+            "refresh": 2,
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".*",
+            "sort": 1
+          },
+          {
             "name": "node",
             "label": "Node",
             "type": "query",

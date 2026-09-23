@@ -322,12 +322,13 @@ data:
             "current": {},
             "datasource": {"type": "prometheus", "uid": "mimir"},
             "definition": "label_values(container_memory_working_set_bytes,cluster)",
-            "includeAll": false,
+            "includeAll": true,
+            "allValue": ".*",
             "label": "Cluster",
             "name": "cluster",
             "options": [],
             "query": {"qryType": 1, "query": "label_values(container_memory_working_set_bytes,cluster)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
-            "refresh": 1, "regex": "", "type": "query"
+            "refresh": 1, "regex": "", "multi": true, "type": "query"
           },
           {
             "current": {},
@@ -339,7 +340,7 @@ data:
             "name": "namespace",
             "options": [],
             "query": {"query": "label_values(container_memory_working_set_bytes{cluster=~\"$cluster\"}, namespace)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
-            "refresh": 1, "regex": "", "sort": 1, "multi": false, "type": "query"
+            "refresh": 1, "regex": "", "sort": 1, "multi": true, "type": "query"
           },
           {
             "current": {},
@@ -351,7 +352,7 @@ data:
             "name": "pod",
             "options": [],
             "query": {"query": "label_values(container_memory_working_set_bytes{cluster=~\"$cluster\",namespace=~\"$namespace\"}, pod)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
-            "refresh": 1, "regex": "", "sort": 1, "multi": false, "type": "query"
+            "refresh": 1, "regex": "", "sort": 1, "multi": true, "type": "query"
           },
           {
             "current": {},
@@ -363,7 +364,7 @@ data:
             "name": "container",
             "options": [],
             "query": {"query": "label_values(container_memory_working_set_bytes{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\"}, container)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
-            "refresh": 1, "regex": "", "sort": 1, "multi": false, "type": "query"
+            "refresh": 1, "regex": "", "sort": 1, "multi": true, "type": "query"
           }
         ]
       },

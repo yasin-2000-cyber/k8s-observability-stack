@@ -366,22 +366,24 @@ data:
             "datasource": {"type": "prometheus", "uid": "mimir"},
             "definition": "label_values(kube_namespace_created, cluster)",
             "includeAll": true,
+            "allValue": ".*",
             "label": "cluster",
             "name": "cluster",
             "options": [],
             "query": {"query": "label_values(kube_namespace_created, cluster)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
-            "refresh": 2, "regex": "", "sort": 1, "type": "query"
+            "refresh": 2, "regex": "", "sort": 1, "multi": true, "type": "query"
           },
           {
             "current": {},
             "datasource": {"type": "prometheus", "uid": "mimir"},
             "definition": "label_values(kube_namespace_created{cluster=~\"$cluster\"}, namespace)",
             "includeAll": true,
+            "allValue": ".*",
             "label": "namespace",
             "name": "namespace",
             "options": [],
             "query": {"query": "label_values(kube_namespace_created{cluster=~\"$cluster\"}, namespace)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
-            "refresh": 2, "regex": "", "sort": 1, "type": "query"
+            "refresh": 2, "regex": "", "sort": 1, "multi": true, "type": "query"
           }
         ]
       },

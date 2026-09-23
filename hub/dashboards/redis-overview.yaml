@@ -460,7 +460,7 @@ data:
             "label": "Cluster", "name": "cluster",
             "options": [],
             "query": {"query": "label_values(redis_up{job!=\"kubernetes-pods\"}, cluster)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
-            "refresh": 2, "regex": "", "sort": 1, "multi": false, "type": "query"
+            "refresh": 2, "regex": "", "sort": 1, "multi": true, "type": "query"
           },
           {
             "current": {},
@@ -470,7 +470,7 @@ data:
             "label": "Namespace", "name": "namespace",
             "options": [],
             "query": {"query": "label_values(redis_up{cluster=~\"$cluster\",job!=\"kubernetes-pods\"}, namespace)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
-            "refresh": 2, "regex": "", "sort": 1, "multi": false, "type": "query"
+            "refresh": 2, "regex": "", "sort": 1, "multi": true, "type": "query"
           },
           {
             "current": {},
@@ -480,7 +480,7 @@ data:
             "label": "Pod", "name": "pod",
             "options": [],
             "query": {"query": "label_values(redis_up{cluster=~\"$cluster\",namespace=~\"$namespace\",job!=\"kubernetes-pods\"}, pod)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
-            "refresh": 2, "regex": "", "sort": 1, "multi": false, "type": "query"
+            "refresh": 2, "regex": "", "sort": 1, "multi": true, "type": "query"
           },
           {
             "current": {},
@@ -490,7 +490,7 @@ data:
             "label": "Container", "name": "container",
             "options": [],
             "query": {"query": "label_values(redis_up{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",job!=\"kubernetes-pods\"}, container)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
-            "refresh": 2, "regex": "", "sort": 1, "multi": false, "type": "query"
+            "refresh": 2, "regex": "", "sort": 1, "multi": true, "type": "query"
           },
           {
             "current": {},
@@ -500,7 +500,7 @@ data:
             "label": "Service", "name": "service",
             "options": [],
             "query": {"query": "label_values(redis_up{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",job!=\"kubernetes-pods\"}, service)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
-            "refresh": 2, "regex": "", "sort": 1, "multi": false, "type": "query"
+            "refresh": 2, "regex": "", "sort": 1, "multi": true, "type": "query"
           }
         ]
       },

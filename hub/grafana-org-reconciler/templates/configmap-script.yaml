@@ -149,10 +149,12 @@ data:
     # Copies only the approved dashboards from Org 1 into the target org,
     # placing them in the correct Explorer or Logs folder.
     # Datasource UIDs are identical across all orgs so panel queries resolve without modification.
-    # The dashboard's own "namespace" template variable (if present) is rewritten to a hidden,
-    # single-value custom variable pinned to this org's namespace — Mimir has no per-namespace
-    # tenant boundary (unlike Loki), so without this every Mimir-backed panel would default to
-    # "All" and show every namespace in the cluster, not just this org's own.
+    # The dashboard's own "namespace" template variable (if present) is rewritten to a
+    # locked, single-value custom variable pinned to this org's namespace — Mimir has no
+    # per-namespace tenant boundary (unlike Loki), so without this every Mimir-backed panel
+    # would default to "All" and show every namespace in the cluster, not just this org's
+    # own. It stays visible (hide: 0) rather than fully hidden, so every dashboard
+    # consistently shows a Namespace filter even though its value can't be changed here.
     clone_dashboards_from_org1() {
       local target_org_id="$1" ns="$2"
 
@@ -208,7 +210,7 @@ data:
                 {name: "namespace", label: "Namespace", type: "custom",
                  query: $ns, current: {selected: true, text: $ns, value: $ns},
                  options: [{selected: true, text: $ns, value: $ns}],
-                 multi: false, includeAll: false, hide: 2}
+                 multi: false, includeAll: false, hide: 0}
               else . end
             )
           ) |
