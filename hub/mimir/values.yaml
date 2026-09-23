@@ -77,7 +77,13 @@ mimir:
 
     ingester:
       ring:
-        replication_factor: 1
+        # replication_factor 1 -> 3: with RF=1, every series has exactly one
+        # owning ingester, so losing that single pod blacks out the write path
+        # for every federated tenant at once ("at least 1 live replicas
+        # required, could only find 0"). RF=3 with 5 ingesters means a write
+        # needs quorum (2 of 3) acks, so any single ingester restarting no
+        # longer stalls ingestion.
+        replication_factor: 3
 
     limits:
       compactor_blocks_retention_period: 90d
@@ -85,19 +91,25 @@ mimir:
       ingestion_burst_size: 500000
       max_global_series_per_user: 2000000
 
-# ── Component replicas — single replica each ─────────────────────────────────
+# ── Component replicas — single replica each, except ingester (HA, see below) ─
 ingester:
-  replicas: 1
+  replicas: 5
   zoneAwareReplication:
     enabled: false
+  # Still no PVC — with RF=3 replication in place, durability comes from the
+  # other 2 replicas holding each series rather than from local disk.
+  # block_ranges_period is 10m, so an emptyDir still bounds worst-case
+  # unshipped-sample loss on any one pod's reschedule to ~10-15min, and quorum
+  # means that loss no longer surfaces to queries.
   persistentVolume:
     enabled: false
+  # Resources doubled alongside the 1->5 replica HA change.
   resources:
     requests:
-      cpu: 500m
-      memory: 1Gi
+      cpu: 1000m
+      memory: 2Gi
     limits:
-      memory: 16Gi   # ingester is the most memory-hungry component; no CPU limit to avoid throttling under load
+      memory: 32Gi   # ingester is the most memory-hungry component; no CPU limit to avoid throttling under load
 
 distributor:
   replicas: 1
