@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cert-sentinel
+description: Read-only DaemonSet that watches node-local Kubernetes certificate expiry and alerts before it bites.
+type: application
+version: 0.1.2
+appVersion: "0.1.2"

@@ -32,6 +32,7 @@ data:
     SMTP_HOST       = os.environ["SMTP_HOST"]
     SMTP_PORT       = int(os.environ["SMTP_PORT"])
     SMTP_FROM       = os.environ["SMTP_FROM"]
+    SMTP_USER       = os.environ["SMTP_USER"]
     SMTP_PASS       = os.environ["SMTP_PASSWORD"]
     OPENAI_API_KEY  = os.environ["OPENAI_API_KEY"]
     OPENAI_MODEL    = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
@@ -433,7 +434,7 @@ data:
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as s:
             s.ehlo()
             s.starttls()
-            s.login(SMTP_FROM, SMTP_PASS)
+            s.login(SMTP_USER, SMTP_PASS)
             failed = s.sendmail(SMTP_FROM, recipients, msg.as_string())
         if failed:
             print(f"  [warn] partial delivery failure: {failed}")

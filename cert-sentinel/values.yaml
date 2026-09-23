@@ -1,0 +1,48 @@
+# cert-sentinel — read-only cert expiry watcher.
+# Zero blast radius by design: read-only hostPath mounts, no ServiceAccount token,
+# no RBAC, no Kubernetes API calls. It reads cert files and reports. Nothing else.
+
+image:
+  repository: alpine/openssl
+  tag: "3.5.8"
+  pullPolicy: IfNotPresent
+
+# How often each node re-checks its certs.
+intervalSeconds: 21600  # 6h
+
+thresholds:
+  warnDays: 45      # first alert
+  criticalDays: 14  # daily alert from here
+
+# Alert sinks. Both optional — stdout is always written, so `kubectl logs` works
+# from day one with no secrets configured at all.
+kuma:
+  enabled: false
+  # Uptime Kuma Push monitor URL. Fires EVERY run, healthy or not, so a missed
+  # heartbeat means the checker died rather than a silence you'd read as healthy.
+  pushUrl: "<YOUR_UPTIME_KUMA_PUSH_URL>"
+
+telegram:
+  enabled: false
+  botToken: "<YOUR_TELEGRAM_BOT_TOKEN>"
+  chatId: "<YOUR_TELEGRAM_CHAT_ID>"
+
+nameOverride: ""
+fullnameOverride: ""
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 100m
+    memory: 64Mi
+
+# Every node, no exceptions — an unmonitored node is the one that surprises you.
+# Same convention as node-exporter. The pod costs 10m CPU / 32Mi, so tolerating
+# a `dedicated` taint does not meaningfully consume a reserved node.
+tolerations:
+  - operator: Exists
+
+nodeSelector: {}
+priorityClassName: ""

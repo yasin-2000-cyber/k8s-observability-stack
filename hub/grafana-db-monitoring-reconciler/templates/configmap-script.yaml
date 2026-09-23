@@ -1,0 +1,1641 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-db-monitoring-reconciler-script
+  namespace: monitoring
+data:
+  reconcile.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    GRAFANA_URL="{{ .Values.grafanaUrl }}"
+    GRAFANA_AUTH="${GRAFANA_ADMIN_USER}:${GRAFANA_ADMIN_PASS}"
+
+    # Fixed, hand-defined org — unlike grafana-org-reconciler this is NOT discovered
+    # from live namespaces/Mimir tenants. Datasources for this org are provisioned
+    # declaratively via hub/grafana/values.yaml (see the "DB-monitoring org"
+    # section there), not by this script — this script only guards the org's
+    # existence and keeps its dashboard(s) in sync with what's committed to git.
+    DB_MONITORING_ORG_NAME="{{ .Values.orgName }}"
+
+    # Dashboards kept in sync with the committed JSON files (one per DB cluster).
+    DASHBOARD_JSON_FILES="/scripts/psql-cluster.json /scripts/mariadb-cluster-a.json /scripts/mariadb-cluster-b.json"
+
+    # Dashboard uids to actively delete if present — orphan cleanup for a past
+    # rename/retirement. The reconciler only upserts by each dashboard's *current*
+    # uid, it never deletes one that disappears from the source, so an old uid
+    # would otherwise stay live forever alongside its replacement. Empty by
+    # default; populate via values.yaml's disallowedDashboardUids if needed.
+    DISALLOWED_DASHBOARD_UIDS="{{ .Values.disallowedDashboardUids | join " " }}"
+
+    # ── Helpers (same pattern as grafana-org-reconciler) ───────────────────────
+
+    gapi() {
+      local method="$1" path="$2" body="${3:-}"
+      if [[ -n "$body" ]]; then
+        curl -sf -X "$method" -u "$GRAFANA_AUTH" \
+          -H "Content-Type: application/json" -d "$body" "${GRAFANA_URL}${path}"
+      else
+        curl -sf -X "$method" -u "$GRAFANA_AUTH" "${GRAFANA_URL}${path}"
+      fi
+    }
+
+    gapi_org() {
+      local org_id="$1" method="$2" path="$3" body="${4:-}"
+      if [[ -n "$body" ]]; then
+        curl -sf -X "$method" -u "$GRAFANA_AUTH" \
+          -H "Content-Type: application/json" \
+          -H "X-Grafana-Org-Id: ${org_id}" \
+          -d "$body" "${GRAFANA_URL}${path}"
+      else
+        curl -sf -X "$method" -u "$GRAFANA_AUTH" \
+          -H "X-Grafana-Org-Id: ${org_id}" "${GRAFANA_URL}${path}"
+      fi
+    }
+
+    # ensure_org <org_name> → prints orgId
+    ensure_org() {
+      local org_name="$1"
+      local encoded_name
+      encoded_name=$(printf '%s' "$org_name" | jq -sRr @uri)
+
+      local existing
+      existing=$(gapi GET "/api/orgs/name/${encoded_name}" 2>/dev/null || echo '{}')
+
+      if echo "$existing" | jq -e '.id' > /dev/null 2>&1; then
+        echo "$existing" | jq -r '.id'
+        return
+      fi
+
+      local result
+      result=$(gapi POST "/api/orgs" "$(jq -n --arg name "$org_name" '{name: $name}')")
+      echo "$result" | jq -r '.orgId'
+    }
+
+    # ensure_dashboard <org_id> <json_file> — upsert by the dashboard's own fixed uid
+    ensure_dashboard() {
+      local org_id="$1" json_file="$2"
+      local body
+      body=$(jq -n --slurpfile dashboard "$json_file" \
+        '{dashboard: $dashboard[0], folderId: 0, overwrite: true}')
+      gapi_org "$org_id" POST "/api/dashboards/db" "$body" > /dev/null
+    }
+
+    # cleanup_disallowed_dashboards <org_id>
+    cleanup_disallowed_dashboards() {
+      local org_id="$1"
+      for uid in $DISALLOWED_DASHBOARD_UIDS; do
+        local exists
+        exists=$(gapi_org "$org_id" GET "/api/dashboards/uid/${uid}" 2>/dev/null \
+          | jq -r '.dashboard.id // empty' || true)
+        if [[ -n "$exists" ]]; then
+          echo "[db-monitoring-reconcile] deleting orphaned dashboard ${uid}"
+          gapi_org "$org_id" DELETE "/api/dashboards/uid/${uid}" > /dev/null || true
+        fi
+      done
+    }
+
+    # ── Main ─────────────────────────────────────────────────────────────────
+
+    echo "[db-monitoring-reconcile] starting"
+
+    org_id=$(ensure_org "$DB_MONITORING_ORG_NAME")
+    echo "[db-monitoring-reconcile] org: ${DB_MONITORING_ORG_NAME} (orgId=${org_id})"
+
+    cleanup_disallowed_dashboards "$org_id"
+
+    for f in $DASHBOARD_JSON_FILES; do
+      ensure_dashboard "$org_id" "$f"
+      echo "[db-monitoring-reconcile] dashboard synced (${f})"
+    done
+
+    echo "[db-monitoring-reconcile] finished"
+  psql-cluster.json: |-
+    {
+      "panels": [
+        {
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 0
+          },
+          "id": 100,
+          "panels": [],
+          "title": "Node Live Metrics",
+          "type": "row"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-primary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "max": 100,
+              "min": 0,
+              "unit": "percent"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 0,
+            "y": 1
+          },
+          "id": 1,
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-primary"
+              },
+              "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\",instance=~\"$pg_instance\"}[5m])) * 100)",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}",
+              "refId": "A"
+            }
+          ],
+          "title": "CPU Usage %",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-primary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "max": 100,
+              "min": 0,
+              "unit": "percent"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 6,
+            "y": 1
+          },
+          "id": 2,
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-primary"
+              },
+              "expr": "100 * (1 - (node_memory_MemAvailable_bytes{instance=~\"$pg_instance\"} / node_memory_MemTotal_bytes{instance=~\"$pg_instance\"}))",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}",
+              "refId": "A"
+            }
+          ],
+          "title": "Memory Usage %",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-primary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "max": 100,
+              "min": 0,
+              "unit": "percent"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 12,
+            "y": 1
+          },
+          "id": 3,
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-primary"
+              },
+              "expr": "100 * (1 - (node_filesystem_avail_bytes{instance=~\"$pg_instance\",fstype!~\"tmpfs|overlay\",mountpoint=\"/\"} / node_filesystem_size_bytes{instance=~\"$pg_instance\",fstype!~\"tmpfs|overlay\",mountpoint=\"/\"}))",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}",
+              "refId": "A"
+            }
+          ],
+          "title": "Disk Usage % (root fs)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-primary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "Bps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 18,
+            "y": 1
+          },
+          "id": 4,
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-primary"
+              },
+              "expr": "rate(node_network_receive_bytes_total{instance=~\"$pg_instance\",device!~\"lo\"}[5m])",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }} {{ "{{" }}device{{ "}}" }}",
+              "refId": "A"
+            }
+          ],
+          "title": "Network I/O (receive)",
+          "type": "timeseries"
+        },
+        {
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 9
+          },
+          "id": 101,
+          "panels": [],
+          "title": "DB Connections (filter host above via 'Host (DB connections)')",
+          "type": "row"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${pg_datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 0,
+            "y": 10
+          },
+          "id": 5,
+          "maxPerRow": 3,
+          "repeat": "pg_datasource",
+          "repeatDirection": "h",
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "${pg_datasource}"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "SELECT count(*) AS \"value\" FROM pg_stat_activity WHERE datname IN (${pg_database:sqlstring});",
+              "refId": "A",
+              "sql": {
+                "columns": [],
+                "groupBy": [],
+                "limit": 50
+              }
+            }
+          ],
+          "title": "Current Connections \u2014 ${pg_datasource}",
+          "type": "stat"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${pg_datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "max": 100,
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 70
+                  },
+                  {
+                    "color": "red",
+                    "value": 90
+                  }
+                ]
+              },
+              "unit": "percent"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 0,
+            "y": 16
+          },
+          "id": 6,
+          "maxPerRow": 3,
+          "repeat": "pg_datasource",
+          "repeatDirection": "h",
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "${pg_datasource}"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "SELECT round(100.0 * count(*) / current_setting('max_connections')::int, 1) AS \"value\" FROM pg_stat_activity;",
+              "refId": "A",
+              "sql": {
+                "columns": [],
+                "groupBy": [],
+                "limit": 50
+              }
+            }
+          ],
+          "title": "Connection Utilization % \u2014 ${pg_datasource}",
+          "type": "gauge"
+        },
+        {
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 22
+          },
+          "id": 102,
+          "panels": [],
+          "title": "Connections by State / Top Databases (filter host above)",
+          "type": "row"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${pg_datasource}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 23
+          },
+          "id": 7,
+          "maxPerRow": 3,
+          "repeat": "pg_datasource",
+          "repeatDirection": "h",
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "${pg_datasource}"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "SELECT coalesce(state,'(none)') AS state, count(*) AS connections FROM pg_stat_activity WHERE datname IN (${pg_database:sqlstring}) GROUP BY state ORDER BY connections DESC;",
+              "refId": "A",
+              "sql": {
+                "columns": [],
+                "groupBy": [],
+                "limit": 50
+              }
+            }
+          ],
+          "title": "Connections by State \u2014 ${pg_datasource}",
+          "type": "table"
+        },
+        {
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 31
+          },
+          "id": 103,
+          "panels": [],
+          "title": "Top Databases by Connections (filter host above)",
+          "type": "row"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${pg_datasource}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 32
+          },
+          "id": 8,
+          "maxPerRow": 3,
+          "repeat": "pg_datasource",
+          "repeatDirection": "h",
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "${pg_datasource}"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "SELECT datname, count(*) AS connections FROM pg_stat_activity WHERE datname IN (${pg_database:sqlstring}) GROUP BY datname ORDER BY connections DESC LIMIT 10;",
+              "refId": "A",
+              "sql": {
+                "columns": [],
+                "groupBy": [],
+                "limit": 50
+              }
+            }
+          ],
+          "title": "Top Databases \u2014 ${pg_datasource}",
+          "type": "table"
+        },
+        {
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 40
+          },
+          "id": 104,
+          "panels": [],
+          "title": "Slowest Queries (pg_stat_statements) \u2014 filter host/db above",
+          "type": "row"
+        },
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${pg_datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "cellOptions": {
+                  "type": "auto"
+                }
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "mean_ms"
+                },
+                "properties": [
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "mode": "gradient",
+                      "type": "color-background"
+                    }
+                  },
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "continuous-RdYlGr",
+                      "seriesBy": "last"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 8,
+            "x": 0,
+            "y": 41
+          },
+          "id": 9,
+          "maxPerRow": 3,
+          "repeat": "pg_datasource",
+          "repeatDirection": "h",
+          "targets": [
+            {
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "${pg_datasource}"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "SELECT d.datname, left(CASE WHEN ${query_search:singlequote} = '' THEN s.query ELSE regexp_replace(s.query, '(' || ${query_search:singlequote} || ')', '\u00bb\\1\u00ab', 'gi') END, 200) AS query, s.calls, round(s.total_exec_time::numeric,1) AS total_ms, round(s.mean_exec_time::numeric,1) AS mean_ms, round(s.max_exec_time::numeric,1) AS max_ms, s.rows FROM pg_stat_statements s JOIN pg_database d ON d.oid = s.dbid WHERE d.datname IN (${pg_database:sqlstring}) AND (${query_search:singlequote} = '' OR s.query ILIKE '%' || ${query_search:singlequote} || '%') ORDER BY s.mean_exec_time DESC LIMIT 15;",
+              "refId": "A",
+              "sql": {
+                "columns": [],
+                "groupBy": [],
+                "limit": 50
+              }
+            }
+          ],
+          "title": "Slowest Queries \u2014 ${pg_datasource}",
+          "type": "table"
+        }
+      ],
+      "refresh": "1m",
+      "schemaVersion": 39,
+      "tags": [
+        "postgres",
+        "db-monitoring"
+      ],
+      "templating": {
+        "list": [
+          {
+            "current": {
+              "text": "All",
+              "value": "$__all"
+            },
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prom-db-primary"
+            },
+            "includeAll": true,
+            "label": "Host (node metrics)",
+            "multi": true,
+            "name": "pg_instance",
+            "description": "Replace <YOUR_PSQL_HOST_1>, <YOUR_PSQL_HOST_2>, <YOUR_PSQL_HOST_3> with the node_exporter instance addresses (host:9100) of your actual PostgreSQL cluster members.",
+            "query": {
+              "query": "label_values(up{instance=~\"(<YOUR_PSQL_HOST_1>|<YOUR_PSQL_HOST_2>|<YOUR_PSQL_HOST_3>):9100\"}, instance)",
+              "refId": "StandardVariableQuery"
+            },
+            "refresh": 2,
+            "sort": 1,
+            "type": "query"
+          },
+          {
+            "current": {
+              "text": "All",
+              "value": "$__all"
+            },
+            "includeAll": true,
+            "label": "Host (DB connections)",
+            "multi": true,
+            "name": "pg_datasource",
+            "query": "grafana-postgresql-datasource",
+            "refresh": 1,
+            "type": "datasource"
+          },
+          {
+            "current": {
+              "text": "All",
+              "value": "$__all"
+            },
+            "datasource": {
+              "type": "grafana-postgresql-datasource",
+              "uid": "psql01-pg"
+            },
+            "includeAll": true,
+            "label": "Database name",
+            "multi": true,
+            "name": "pg_database",
+            "query": "SELECT datname FROM pg_database WHERE datistemplate = false ORDER BY datname;",
+            "refresh": 2,
+            "sort": 1,
+            "type": "query"
+          },
+          {
+            "current": {
+              "text": "",
+              "value": ""
+            },
+            "hide": 0,
+            "label": "Search query text",
+            "name": "query_search",
+            "query": "",
+            "type": "textbox"
+          }
+        ]
+      },
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "timezone": "browser",
+      "title": "PSQL Cluster",
+      "uid": "psql-cluster"
+    }
+  mariadb-cluster-a.json: |-
+    {
+      "uid": "mariadb-cluster-a",
+      "title": "MariaDB Cluster \u2014 A",
+      "tags": [
+        "mariadb",
+        "db-monitoring"
+      ],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "1m",
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "templating": {
+        "list": [
+          {
+            "name": "host",
+            "description": "Job labels follow a <job-prefix>_<hostname> convention set by this cluster's mysqld_exporter/node_exporter Prometheus scrape config (e.g. relabeling job_name to <CLUSTER_A>_dbhost01). Replace the placeholder below with your actual job-name prefix.",
+            "label": "Host",
+            "type": "query",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prom-db-secondary"
+            },
+            "query": {
+              "query": "label_values(up{job=~\"<CLUSTER_A>_.*\"}, job)",
+              "refId": "StandardVariableQuery"
+            },
+            "regex": "/<CLUSTER_A>_(.+)/",
+            "refresh": 2,
+            "includeAll": true,
+            "multi": true,
+            "current": {
+              "text": "All",
+              "value": "$__all"
+            },
+            "sort": 1
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 100,
+          "type": "row",
+          "title": "Node Live Metrics",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 0
+          },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "CPU Usage %",
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 0,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\",job=~\".*_$host\"}[5m])) * 100)",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Memory Usage %",
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 6,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "100 * (1 - (node_memory_MemAvailable_bytes{job=~\".*_$host\"} / node_memory_MemTotal_bytes{job=~\".*_$host\"}))",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Disk Usage % (root fs)",
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 12,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "100 * (1 - (node_filesystem_avail_bytes{job=~\".*_$host\",fstype!~\"tmpfs|overlay\",mountpoint=\"/\"} / node_filesystem_size_bytes{job=~\".*_$host\",fstype!~\"tmpfs|overlay\",mountpoint=\"/\"}))",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "Network I/O (receive)",
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 18,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "Bps"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "rate(node_network_receive_bytes_total{job=~\".*_$host\",device!~\"lo\"}[5m])",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }} {{ "{{" }}device{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 101,
+          "type": "row",
+          "title": "MariaDB Overview",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 9
+          },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "id": 5,
+          "type": "stat",
+          "title": "Uptime",
+          "gridPos": {
+            "h": 6,
+            "w": 6,
+            "x": 0,
+            "y": 10
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "mysql_global_status_uptime{instance=~\"$host\"}",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "Threads Connected",
+          "gridPos": {
+            "h": 6,
+            "w": 6,
+            "x": 6,
+            "y": 10
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "mysql_global_status_threads_connected{instance=~\"$host\"}",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "Queries/sec",
+          "gridPos": {
+            "h": 6,
+            "w": 6,
+            "x": 12,
+            "y": 10
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "rate(mysql_global_status_questions{instance=~\"$host\"}[5m])",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Slow Queries/sec",
+          "gridPos": {
+            "h": 6,
+            "w": 6,
+            "x": 18,
+            "y": 10
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "rate(mysql_global_status_slow_queries{instance=~\"$host\"}[5m])",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 102,
+          "type": "row",
+          "title": "InnoDB Buffer Pool",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 16
+          },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "id": 9,
+          "type": "timeseries",
+          "title": "Buffer Pool Hit Ratio %",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 17
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "100 * (1 - (rate(mysql_global_status_innodb_buffer_pool_reads{instance=~\"$host\"}[5m]) / rate(mysql_global_status_innodb_buffer_pool_read_requests{instance=~\"$host\"}[5m])))",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "Buffer Pool Dirty Bytes",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 17
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "mysql_global_status_innodb_buffer_pool_bytes_dirty{instance=~\"$host\"}",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 103,
+          "type": "row",
+          "title": "Replication",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 25
+          },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "id": 11,
+          "type": "timeseries",
+          "title": "Seconds Behind Master",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 26
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "mysql_slave_status_seconds_behind_master{instance=~\"$host\"}",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "type": "timeseries",
+          "title": "Slave IO/SQL Running (1=running, 0=stopped)",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 26
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "max": 1
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "mysql_slave_status_slave_io_running{instance=~\"$host\"}",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }} io"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "mysql_slave_status_slave_sql_running{instance=~\"$host\"}",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }} sql"
+            }
+          ]
+        }
+      ]
+    }
+  mariadb-cluster-b.json: |-
+    {
+      "uid": "mariadb-cluster-b",
+      "title": "MariaDB Cluster \u2014 B",
+      "tags": [
+        "mariadb",
+        "db-monitoring"
+      ],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "1m",
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "templating": {
+        "list": [
+          {
+            "name": "host",
+            "description": "Job labels follow a <job-prefix>_<hostname> convention set by this cluster's mysqld_exporter/node_exporter Prometheus scrape config (e.g. relabeling job_name to <CLUSTER_B>_dbhost01). Replace the placeholder below with your actual job-name prefix.",
+            "label": "Host",
+            "type": "query",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prom-db-secondary"
+            },
+            "query": {
+              "query": "label_values(up{job=~\"<CLUSTER_B>_.*\"}, job)",
+              "refId": "StandardVariableQuery"
+            },
+            "regex": "/<CLUSTER_B>_(.+)/",
+            "refresh": 2,
+            "includeAll": true,
+            "multi": true,
+            "current": {
+              "text": "All",
+              "value": "$__all"
+            },
+            "sort": 1
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 100,
+          "type": "row",
+          "title": "Node Live Metrics",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 0
+          },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "CPU Usage %",
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 0,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\",job=~\".*_$host\"}[5m])) * 100)",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Memory Usage %",
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 6,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "100 * (1 - (node_memory_MemAvailable_bytes{job=~\".*_$host\"} / node_memory_MemTotal_bytes{job=~\".*_$host\"}))",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Disk Usage % (root fs)",
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 12,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "100 * (1 - (node_filesystem_avail_bytes{job=~\".*_$host\",fstype!~\"tmpfs|overlay\",mountpoint=\"/\"} / node_filesystem_size_bytes{job=~\".*_$host\",fstype!~\"tmpfs|overlay\",mountpoint=\"/\"}))",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "Network I/O (receive)",
+          "gridPos": {
+            "h": 8,
+            "w": 6,
+            "x": 18,
+            "y": 1
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "Bps"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "rate(node_network_receive_bytes_total{job=~\".*_$host\",device!~\"lo\"}[5m])",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }} {{ "{{" }}device{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 101,
+          "type": "row",
+          "title": "MariaDB Overview",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 9
+          },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "id": 5,
+          "type": "stat",
+          "title": "Uptime",
+          "gridPos": {
+            "h": 6,
+            "w": 6,
+            "x": 0,
+            "y": 10
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "mysql_global_status_uptime{instance=~\"$host\"}",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "Threads Connected",
+          "gridPos": {
+            "h": 6,
+            "w": 6,
+            "x": 6,
+            "y": 10
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "mysql_global_status_threads_connected{instance=~\"$host\"}",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "Queries/sec",
+          "gridPos": {
+            "h": 6,
+            "w": 6,
+            "x": 12,
+            "y": 10
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "rate(mysql_global_status_questions{instance=~\"$host\"}[5m])",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Slow Queries/sec",
+          "gridPos": {
+            "h": 6,
+            "w": 6,
+            "x": 18,
+            "y": 10
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "rate(mysql_global_status_slow_queries{instance=~\"$host\"}[5m])",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 102,
+          "type": "row",
+          "title": "InnoDB Buffer Pool",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 16
+          },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "id": 9,
+          "type": "timeseries",
+          "title": "Buffer Pool Hit Ratio %",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 17
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "100 * (1 - (rate(mysql_global_status_innodb_buffer_pool_reads{instance=~\"$host\"}[5m]) / rate(mysql_global_status_innodb_buffer_pool_read_requests{instance=~\"$host\"}[5m])))",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "Buffer Pool Dirty Bytes",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 17
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "mysql_global_status_innodb_buffer_pool_bytes_dirty{instance=~\"$host\"}",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 103,
+          "type": "row",
+          "title": "Replication",
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 25
+          },
+          "collapsed": false,
+          "panels": []
+        },
+        {
+          "id": 11,
+          "type": "timeseries",
+          "title": "Seconds Behind Master",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 26
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "mysql_slave_status_seconds_behind_master{instance=~\"$host\"}",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "type": "timeseries",
+          "title": "Slave IO/SQL Running (1=running, 0=stopped)",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 26
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prom-db-secondary"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "max": 1
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "mysql_slave_status_slave_io_running{instance=~\"$host\"}",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }} io"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prom-db-secondary"
+              },
+              "expr": "mysql_slave_status_slave_sql_running{instance=~\"$host\"}",
+              "legendFormat": "{{ "{{" }}instance{{ "}}" }} sql"
+            }
+          ]
+        }
+      ]
+    }

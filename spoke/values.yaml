@@ -1,4 +1,8 @@
 alloy:
+  clustering:
+    enabled: true   # required — the `clustering { enabled = true }` blocks below only shard
+                    # work across peers if clustering is turned on at the Alloy instance level too
+
   configMap:
     create: true
     content: |-
@@ -98,7 +102,10 @@ alloy:
 
       // ingress-nginx controller metrics (request counts/latency for RED dashboards + reporter).
       // Discovered directly via the metrics Service's Endpoints rather than the ServiceMonitor
-      // CRD path above, since ingress-nginx's serviceMonitor isn't reliably enabled on every cluster.
+      // CRD path above, since ingress-nginx's serviceMonitor isn't reliably enabled on every cluster,
+      // and its default relabeling collapses the per-Ingress namespace/service labels to constants.
+      // Prerequisite: the ingress-nginx release must have `controller.metrics.enabled: true` (and
+      // `controller.metrics.serviceMonitor.enabled: false`) or this block finds zero targets.
       discovery.kubernetes "ingress_nginx_metrics" {
         role = "endpoints"
         namespaces {
@@ -143,7 +150,7 @@ alloy:
           source_labels = ["__address__", "__meta_kubernetes_pod_annotation_prometheus_io_port"]
           action        = "replace"
           target_label  = "__address__"
-          regex         = "(.+?)(?::\\d+)?;(\\d+)"
+          regex         = "([^:]+)(?::\\d+)?;(\\d+)"
           replacement   = "$1:$2"
         }
         rule {
@@ -207,13 +214,13 @@ alloy:
       // ── Logs ───────────────────────────────────────────────────────────────
 
       // Discover pod targets for log tailing
-      discovery.kubernetes "pods" {
+      discovery.kubernetes "pods_logs" {
         role = "pod"
       }
 
       // Relabel pod targets to extract useful labels
       discovery.relabel "pod_logs" {
-        targets = discovery.kubernetes.pods.targets
+        targets = discovery.kubernetes.pods_logs.targets
 
         rule {
           source_labels = ["__meta_kubernetes_namespace"]

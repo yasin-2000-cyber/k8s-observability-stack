@@ -13,7 +13,7 @@ data:
     GRAFANA_AUTH="${GRAFANA_ADMIN_USER}:${GRAFANA_ADMIN_PASS}"
 
     # Dashboards cloned into per-namespace orgs (everything else stays in main org only)
-    ALLOWED_CLONE_UIDS="dynamic-explorer k8s-container loki-overview"
+    ALLOWED_CLONE_UIDS="dynamic-explorer k8s-container loki-overview k8s-overview k8s-views-namespaces k8s-ram-cpu redis-overview"
     # Dashboards to actively remove from per-namespace orgs if present
     DISALLOWED_UIDS="k8s-nodes-hub k8s-pods-hub k8s-cluster-overview node-exporter-full"
 
@@ -193,7 +193,7 @@ data:
         # Map each dashboard UID to its target folder
         local folder_id
         case "$uid" in
-          dynamic-explorer|k8s-container) folder_id="$explorer_folder_id" ;;
+          dynamic-explorer|k8s-container|k8s-overview|k8s-views-namespaces|k8s-ram-cpu|redis-overview) folder_id="$explorer_folder_id" ;;
           loki-overview)                  folder_id="$logs_folder_id" ;;
           *)                              folder_id=0 ;;
         esac

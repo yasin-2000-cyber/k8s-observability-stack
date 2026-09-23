@@ -19,6 +19,9 @@ smtp:
   host: "smtp.office365.com"   # replace with your SMTP server
   port: "587"
   from: "alerts@example.com"   # replace with your sender address
+  # SMTP login username. Defaults to the from-address, but SendGrid-style relays
+  # require this to be the literal string "apikey" instead.
+  user: "alerts@example.com"
 
 openaiModel: "gpt-4o-mini"
 

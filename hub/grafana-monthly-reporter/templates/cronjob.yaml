@@ -38,6 +38,8 @@ spec:
                   value: {{ .Values.smtp.port | quote }}
                 - name: SMTP_FROM
                   value: {{ .Values.smtp.from | quote }}
+                - name: SMTP_USER
+                  value: {{ .Values.smtp.user | quote }}
                 - name: GRAFANA_ADMIN_USER
                   valueFrom:
                     secretKeyRef:

@@ -12,7 +12,9 @@ A production-grade, multi-tenant Kubernetes observability stack built on the [Gr
 - **Hub-and-spoke topology** — one hub cluster hosts the storage backends; spoke clusters forward all telemetry over HTTPS
 - **Multi-tenant Grafana** — each Kubernetes namespace gets its own isolated Grafana organization automatically, with its own datasources scoped to that namespace's data
 - **One-click log ↔ trace correlation** — click any log line to jump to the full trace in Tempo; click any span to see matching logs
-- **7 pre-built dashboards** — cluster overview, nodes, pods, containers, node exporter, Loki logs, and a dynamic trace+log explorer
+- **11 pre-built dashboards** — cluster overview, nodes, pods, containers, node exporter, Loki logs, a dynamic trace+log explorer, a Kubernetes fleet overview, a namespace-views dashboard, a RAM/CPU deep-dive, and a Redis overview
+- **Node-level certificate expiry watcher** — a zero-RBAC, read-only DaemonSet (`cert-sentinel`) that alerts before an expired kubeadm/kubelet cert silently breaks ArgoCD sync, kubelet status, or ingress backend discovery
+- **Optional fixed-org DB dashboards** — a small reconciler (`grafana-db-monitoring-reconciler`) that keeps a hand-picked PostgreSQL/MariaDB dashboard set in sync in their own Grafana org, for teams that want DB-host metrics alongside the rest of the stack
 - **Automated alerting** — Grafana unified alerting rules for node health, pod health, and monitoring stack self-health, delivered via email
 - **AI-powered monthly report** — an agentic reporter (OpenAI gpt-4o-mini + tool calling) autonomously queries metrics and logs, writes an HTML report with per-namespace analysis, and emails it to every team on the 1st of each month
 
@@ -46,7 +48,8 @@ A production-grade, multi-tenant Kubernetes observability stack built on the [Gr
 | hub-alloy | Custom (this repo) | 1.0.0 | Hub DaemonSet — scrapes hub cluster + receives spoke span metrics |
 | grafana-org-reconciler | Custom (this repo) | 0.1.0 | Creates per-namespace Grafana orgs and per-org email alerting every 30 minutes |
 | grafana-monthly-reporter | Custom (this repo) | 0.1.0 | Deterministic Mimir/Loki scrape + AI-written narrative insights (gpt-4o-mini) — emails monthly HTML report to each org |
-| Dashboards | ConfigMaps (this repo) | — | 7 pre-built Grafana dashboards |
+| grafana-db-monitoring-reconciler | Custom (this repo) | 0.1.0 | Optional — ensures a fixed "DB-monitoring" org exists and keeps 3 PostgreSQL/MariaDB dashboards synced into it every 30 minutes |
+| Dashboards | ConfigMaps (this repo) | — | 11 pre-built Grafana dashboards |
 
 ---
 
@@ -61,6 +64,39 @@ Apps that run directly on the **hub** cluster (rather than a spoke) skip spoke-a
 
 ---
 
+## Node-level components (any cluster)
+
+| Component | Helm Chart | Version | Purpose |
+|-----------|-----------|---------|---------|
+| cert-sentinel | Custom (this repo) | 0.1.2 | Optional — read-only DaemonSet, watches node-local Kubernetes PKI cert expiry (kubeadm certs, kubeconfig client certs, kubelet client/serving certs), alerts via stdout + optional Uptime Kuma push + Telegram |
+
+`cert-sentinel` has **no ServiceAccount, no RBAC, and no Kubernetes API calls at all** — it only reads local host files (read-only hostPath mounts) and reports. It's independent of the hub/spoke topology and can be installed on any cluster (hub, spoke, or neither) on its own:
+
+```bash
+helm upgrade --install cert-sentinel cert-sentinel/ \
+  -n monitoring --create-namespace \
+  --set kuma.enabled=true \
+  --set kuma.pushUrl=<YOUR_UPTIME_KUMA_PUSH_URL> \
+  --set telegram.enabled=true \
+  --set telegram.botToken=<YOUR_TELEGRAM_BOT_TOKEN> \
+  --set telegram.chatId=<YOUR_TELEGRAM_CHAT_ID>
+```
+
+Both alert sinks are optional and off by default — `kubectl logs` against the DaemonSet works with zero configuration.
+
+---
+
+## Clustering & scaling notes
+
+This stack is designed to run with more than one replica of Alloy per cluster (hub or spoke), so a few things need to line up together — easy to miss if you're only skimming individual values files:
+
+- **Alloy clustering needs to be enabled at three levels, not one.** `alloy.clustering.enabled: true` (top-level Helm value, turns on the Alloy process's `--cluster.enabled` runtime flag) **and** `clustering { enabled = true }` inside each `prometheus.scrape`/`prometheus.operator.servicemonitors` River block (opts that specific scrape job into cluster-wide target sharding) **and**, for hub-alloy specifically, the DaemonSet's `--cluster.discover-peers=provider=k8s namespace=...  label_selector="..."` arg needs its `label_selector` value **double-quoted** — go-discover's parser splits on the first `=`, so an unquoted `key=value` selector silently fails peer discovery and every replica bootstraps as its own isolated 1-node cluster (each one then scrapes and remote-writes the *same* cluster-wide targets, which is both wasteful and a common cause of OOMKills at scale). If only some of these three are set, clustering is either partially inert or fully inert — check all three.
+- **hub-alloy's memory limit should be generous** (`8Gi` in this repo's default) once clustering is genuinely sharding real cluster-wide scrape work across replicas, not the smaller limit appropriate for a single low-traffic instance.
+- **Mimir's `store_gateway` runs as a single replica by design in this repo** (`replicas: 1`, see `hub/mimir/values.yaml`) with an `8Gi` memory limit. Because it's single-replica, an OOM there breaks *historical* queries for every tenant until it finishes resyncing — if you have many federated tenants at long retention, watch its memory usage and raise the limit (or move to a replicated store-gateway with sharding, which Mimir supports but this repo doesn't configure by default) before it becomes a problem.
+- **Mimir's ingester TSDB block-cutting cadence is tuned down from Mimir's stock defaults** (`block_ranges_period: [10m]` vs. the 2h default, `retention_period: 4h` vs. the 13h default) to bound the data-loss window if an ingester pod is lost, and to keep its local disk from filling with blocks already shipped to S3 — `retention_period` should stay comfortably above `store_gateway`'s bucket-sync interval (15m default) so store-gateway has already discovered a block before the ingester drops its local copy.
+
+---
+
 ## Multi-tenant Grafana org model
 
 ```
@@ -69,13 +105,13 @@ Grafana (hub cluster)
 │   ├── All dashboards (including infra-only ones)
 │   └── Datasources: all clusters federated
 ├── hub-monitoring (auto-created)
-│   ├── Dashboards: Dynamic Explorer, K8s Container, Loki Overview
+│   ├── Dashboards: Dynamic Explorer, K8s Container, Loki Overview, K8s Overview, K8s Views/Namespaces, K8s RAM/CPU, Redis Overview
 │   └── Datasources: Mimir tenant=hub, Loki tenant=hub-monitoring
 ├── hub-my-app (auto-created)
-│   ├── Same 3 dashboards
+│   ├── Same 7 dashboards
 │   └── Datasources: Mimir tenant=hub, Loki tenant=hub-my-app
 └── spoke-1-their-app (auto-created)
-    ├── Same 3 dashboards
+    ├── Same 7 dashboards
     └── Datasources: Mimir tenant=spoke-1, Loki tenant=spoke-1-their-app
 ```
 
@@ -83,7 +119,7 @@ The **Org Reconciler** CronJob runs every 30 minutes and:
 1. Discovers namespaces from the hub cluster (kubectl) and spoke clusters (Mimir label values)
 2. Creates a Grafana org per namespace if it does not exist
 3. Provisions 4 datasources per org (Mimir, Loki, Tempo scoped to that cluster; Mimir Hub for span metrics)
-4. Clones the 3 approved dashboards from Org 1 into per-org `Explorer`/`Logs` folders, pinning each dashboard's `namespace` variable to that org's own namespace (Mimir has no per-namespace tenant boundary, unlike Loki, so without this every Mimir-backed panel would default to showing the whole cluster)
+4. Clones the 7 approved dashboards (`ALLOWED_CLONE_UIDS` in its script) from Org 1 into per-org `Explorer`/`Logs` folders, pinning each dashboard's `namespace` variable to that org's own namespace (Mimir has no per-namespace tenant boundary, unlike Loki, so without this every Mimir-backed panel would default to showing the whole cluster)
 5. Removes any infra-only dashboards from per-namespace orgs
 6. Creates/updates an `email-team` contact point from the org's current member list and points the org's default notification policy at it — so per-namespace alert routing stays in sync with who's actually in that Grafana org, no manual contact-point maintenance required
 
@@ -120,8 +156,11 @@ Before deploying the hub stack, ensure the following are installed on the hub cl
 | `external-dns` (optional) | For automatic DNS record management |
 | S3-compatible storage | MinIO, AWS S3, Wasabi, etc. — create buckets before deploying |
 | PostgreSQL 14+ | For Grafana backend (SQLite works for testing) |
+| A Prometheus Operator install (optional) | Only if you want `ServiceMonitor`-based scraping in addition to pod-annotation scraping |
 
 For each spoke cluster: the OTel Operator must be installed if you want auto-instrumentation. Apps hosted directly on the hub cluster can be auto-instrumented too — the hub stack installs its own OTel Operator (step 4 below).
+
+**If you plan to use the optional `grafana-db-monitoring-reconciler`:** you'll also need a read-only Postgres monitoring role on each PostgreSQL host (e.g. a member of `pg_monitor`/`pg_read_all_stats` — never superuser), the `pg_stat_statements` extension enabled for the "Slowest Queries" panel, and an existing Prometheus (or two, if your PostgreSQL and MariaDB fleets are scraped by separate Prometheus instances) already collecting `node_exporter`/`postgres_exporter`/`mysqld_exporter` metrics — this component only manages the Grafana org/dashboards/datasources, it doesn't deploy any exporters itself.
 
 ---
 
@@ -212,6 +251,25 @@ helm upgrade --install grafana-org-reconciler hub/grafana-org-reconciler \
 
 # 9. Monthly Reporter
 helm upgrade --install grafana-monthly-reporter hub/grafana-monthly-reporter \
+  -n $NAMESPACE
+
+# 10. (Optional) DB Monitoring Reconciler — fixed-org PostgreSQL/MariaDB dashboards.
+# Only needed if you want the psql-cluster / MariaDB dashboards; skip otherwise.
+# Requires a read-only Postgres monitoring role (e.g. a member of
+# pg_monitor/pg_read_all_stats — not superuser) for POSTGRES_EXPORTER_USER/PASSWORD,
+# and the datasource URLs configured in hub/grafana/values.yaml's "DB-monitoring org"
+# section (placeholders like <YOUR_PSQL_HOST_1>, <YOUR_PROMETHEUS_HOST>) filled in
+# BEFORE step 5 re-runs, since Grafana's datasource provisioning happens at that step.
+kubectl create secret generic monitoring-postgres-exporter-secret -n $NAMESPACE \
+  --from-literal=POSTGRES_EXPORTER_USER=<YOUR_READONLY_MONITORING_USER> \
+  --from-literal=POSTGRES_EXPORTER_PASSWORD=<YOUR_READONLY_MONITORING_PASSWORD>
+
+helm upgrade --install grafana-db-monitoring-reconciler hub/grafana-db-monitoring-reconciler \
+  -n $NAMESPACE
+
+# 11. (Optional) cert-sentinel — node-local cert expiry watcher, independent of the
+# rest of the stack. See "Node-level components" above for details/flags.
+helm upgrade --install cert-sentinel cert-sentinel/ \
   -n $NAMESPACE
 ```
 
@@ -317,6 +375,8 @@ Or create a `ServiceMonitor` CR if you use Prometheus Operator.
 | hub-alloy | [hub/hub-alloy/values.yaml](hub/hub-alloy/values.yaml) |
 | Org Reconciler | [hub/grafana-org-reconciler/values.yaml](hub/grafana-org-reconciler/values.yaml) |
 | Monthly Reporter | [hub/grafana-monthly-reporter/values.yaml](hub/grafana-monthly-reporter/values.yaml) |
+| DB Monitoring Reconciler (optional) | [hub/grafana-db-monitoring-reconciler/values.yaml](hub/grafana-db-monitoring-reconciler/values.yaml) |
+| cert-sentinel (optional, any cluster) | [cert-sentinel/values.yaml](cert-sentinel/values.yaml) |
 | Spoke Alloy | [spoke/values.yaml](spoke/values.yaml) |
 
 ---

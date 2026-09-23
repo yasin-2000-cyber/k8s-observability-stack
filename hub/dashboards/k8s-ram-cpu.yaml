@@ -1,0 +1,376 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-k8s-ram-cpu
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "Infrastructure"
+data:
+  k8s-ram-cpu.json: |
+    {
+      "description": "Shows RAM and CPU utilization grouped by namespaces, deployments and specific pods. This dashboard shows the values at specific point in time, its useful for getting an instant feeling about what takes most of the resources in the cluster.",
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 0,
+      "links": [],
+      "panels": [
+        {
+          "collapsed": false,
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+          "id": 19, "panels": [], "title": "Memory Usage", "type": "row"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [{"options": {"0": {"color": "dark-blue", "index": 0, "text": "Memory"}}, "type": "value"}],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "dark-green", "value": 0}, {"color": "red", "value": 80}]}
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 3, "w": 3, "x": 0, "y": 1},
+          "id": 20,
+          "options": {
+            "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "auto",
+            "percentChangeColorMode": "standard",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showPercentChange": false, "textMode": "value", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{"datasource": {"name": "Expression", "type": "__expr__", "uid": "__expr__"}, "expression": "0", "hide": false, "refId": "B", "type": "math"}],
+          "title": "",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "The memory usage in a cluster grouped by Kubernetes pod",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "continuous-YlRd"}, "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}]},
+              "unit": "bytes"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 10, "w": 7, "x": 3, "y": 1},
+          "id": 9,
+          "options": {
+            "displayMode": "gradient",
+            "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false},
+            "maxVizHeight": 300, "minVizHeight": 20, "minVizWidth": 0, "namePlacement": "auto", "orientation": "horizontal",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showUnfilled": true, "sizing": "auto", "text": {}, "valueMode": "color"
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code", "exemplar": false,
+            "expr": "sort_desc(sum by (pod, namespace) (container_memory_working_set_bytes{pod!=\"\",container!=\"POD\",container!=\"\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\"}))",
+            "format": "time_series", "hide": false, "instant": true, "interval": "", "legendFormat": "{{ namespace }} - {{ pod}}", "range": false, "refId": "A"
+          }],
+          "title": "Memory usage by pod",
+          "type": "bargauge"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "The memory usage in a cluster grouped by Kubernetes deployment",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "continuous-YlRd"}, "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}]},
+              "unit": "bytes"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 10, "w": 7, "x": 10, "y": 1},
+          "id": 8,
+          "options": {
+            "displayMode": "gradient",
+            "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false},
+            "maxVizHeight": 300, "minVizHeight": 20, "minVizWidth": 0, "namePlacement": "auto", "orientation": "horizontal",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showUnfilled": true, "sizing": "auto", "text": {}, "valueMode": "color"
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code", "exemplar": false,
+            "expr": "sort_desc(sum by (container, namespace) (container_memory_working_set_bytes{container!=\"POD\",container!=\"\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\"}))",
+            "format": "time_series", "hide": false, "instant": true, "interval": "", "legendFormat": "{{ namespace }} - {{ container}}", "range": false, "refId": "A"
+          }],
+          "title": "Memory usage by deployment",
+          "type": "bargauge"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "The memory usage in a cluster grouped by Kubernetes namespace",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "continuous-YlRd"}, "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}]},
+              "unit": "bytes"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 10, "w": 7, "x": 17, "y": 1},
+          "id": 10,
+          "options": {
+            "displayMode": "gradient",
+            "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false},
+            "maxVizHeight": 300, "minVizHeight": 20, "minVizWidth": 0, "namePlacement": "auto", "orientation": "horizontal",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showUnfilled": true, "sizing": "auto", "text": {}, "valueMode": "color"
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code", "exemplar": false,
+            "expr": "sort_desc(sum by (namespace) (container_memory_working_set_bytes{pod!=\"\",container!=\"POD\",container!=\"\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\"}))",
+            "format": "time_series", "hide": false, "instant": true, "interval": "", "legendFormat": "{{ namespace }}", "range": false, "refId": "A"
+          }],
+          "title": "Memory usage by namespace",
+          "type": "bargauge"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "The memory usage in percentage of all nodes in the cluster.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [{"options": {"null": {"index": 0, "text": "N/A"}}, "type": "value"}],
+              "max": 100, "min": 0,
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}, {"color": "#EAB839", "value": 65}, {"color": "red", "value": 90}]},
+              "unit": "percent"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 7, "w": 3, "x": 0, "y": 4},
+          "id": 13,
+          "options": {
+            "minVizHeight": 75, "minVizWidth": 75, "orientation": "horizontal",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showThresholdLabels": false, "showThresholdMarkers": true, "sizing": "auto"
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "(sum (node_memory_MemTotal_bytes{cluster=~\"$cluster\"}) - sum (node_memory_MemAvailable_bytes{cluster=~\"$cluster\"})) / sum (node_memory_MemTotal_bytes{cluster=~\"$cluster\"}) * 100",
+            "hide": false, "legendFormat": "__auto", "range": true, "refId": "A"
+          }],
+          "title": "Memory Usage",
+          "type": "gauge"
+        },
+        {
+          "collapsed": false,
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 11},
+          "id": 18, "panels": [], "title": "CPU Usage", "type": "row"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [{"options": {"0": {"color": "dark-purple", "index": 0, "text": "CPU"}}, "type": "value"}],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "dark-green", "value": 0}, {"color": "red", "value": 80}]}
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 3, "w": 3, "x": 0, "y": 12},
+          "id": 21,
+          "options": {
+            "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "auto",
+            "percentChangeColorMode": "standard",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showPercentChange": false, "textMode": "value", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{"datasource": {"name": "Expression", "type": "__expr__", "uid": "__expr__"}, "expression": "0", "hide": false, "refId": "B", "type": "math"}],
+          "title": "",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "The CPU usage in a cluster grouped by Kubernetes pod",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "continuous-YlRd"}, "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}]},
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 10, "w": 7, "x": 3, "y": 12},
+          "id": 17,
+          "options": {
+            "displayMode": "gradient",
+            "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false},
+            "maxVizHeight": 300, "minVizHeight": 20, "minVizWidth": 0, "namePlacement": "auto", "orientation": "horizontal",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showUnfilled": true, "sizing": "auto", "valueMode": "color"
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code", "exemplar": false,
+            "expr": "sort_desc(sum by (pod, namespace) (rate(container_cpu_usage_seconds_total{container!=\"\",container!=\"POD\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\"}[5m])))",
+            "format": "time_series", "instant": true, "legendFormat": "{{ namespace }} - {{ pod}}", "range": false, "refId": "A"
+          }],
+          "title": "CPU Usage by pod",
+          "type": "bargauge"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "The CPU usage in a cluster grouped by Kubernetes deployment",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "continuous-YlRd"}, "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}]},
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 10, "w": 7, "x": 10, "y": 12},
+          "id": 15,
+          "options": {
+            "displayMode": "gradient",
+            "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false},
+            "maxVizHeight": 300, "minVizHeight": 20, "minVizWidth": 0, "namePlacement": "auto", "orientation": "horizontal",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showUnfilled": true, "sizing": "auto", "valueMode": "color"
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code", "exemplar": false,
+            "expr": "sort_desc(sum by (container, namespace) (rate(container_cpu_usage_seconds_total{container!=\"\",container!=\"POD\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\"}[5m])))",
+            "format": "time_series", "hide": false, "instant": true, "legendFormat": "{{ namespace }} - {{container}}", "range": false, "refId": "A"
+          }],
+          "title": "CPU Usage by deployment",
+          "type": "bargauge"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "The CPU usage in a cluster grouped by Kubernetes namespace",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "continuous-YlRd"}, "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}]},
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 10, "w": 7, "x": 17, "y": 12},
+          "id": 16,
+          "options": {
+            "displayMode": "gradient",
+            "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false},
+            "maxVizHeight": 300, "minVizHeight": 20, "minVizWidth": 0, "namePlacement": "auto", "orientation": "horizontal",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showUnfilled": true, "sizing": "auto", "valueMode": "color"
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code", "exemplar": false,
+            "expr": "sort_desc(sum by (namespace) (rate(container_cpu_usage_seconds_total{container!=\"\",container!=\"POD\",cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\"}[5m])))",
+            "format": "time_series", "instant": true, "legendFormat": "{{namespace}}", "range": false, "refId": "A"
+          }],
+          "title": "CPU Usage by namespace",
+          "type": "bargauge"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "The average CPU usage of all the nodes in the cluster.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"}, "links": [],
+              "mappings": [{"options": {"null": {"index": 0, "text": "N/A"}}, "type": "value"}],
+              "max": 100, "min": 0,
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}, {"color": "#EAB839", "value": 65}, {"color": "red", "value": 90}]},
+              "unit": "percent"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 7, "w": 3, "x": 0, "y": 15},
+          "id": 12,
+          "options": {
+            "minVizHeight": 75, "minVizWidth": 75, "orientation": "horizontal",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showThresholdLabels": false, "showThresholdMarkers": true, "sizing": "auto"
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code", "exemplar": false,
+            "expr": "avg(100 - (avg by (node) (rate(node_cpu_seconds_total{mode=\"idle\", cluster=~\"$cluster\"}[5m])) * 100))",
+            "format": "time_series", "instant": false, "legendFormat": "__auto", "range": true, "refId": "A"
+          }],
+          "title": "CPU Usage",
+          "type": "gauge"
+        }
+      ],
+      "refresh": "",
+      "schemaVersion": 42,
+      "tags": ["kubernetes", "prometheus", "node exporter", "cadvisor", "utilization", "ram", "cpu"],
+      "templating": {
+        "list": [
+          {
+            "current": {},
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "definition": "label_values(container_memory_working_set_bytes,cluster)",
+            "includeAll": false,
+            "label": "Cluster",
+            "name": "cluster",
+            "options": [],
+            "query": {"qryType": 1, "query": "label_values(container_memory_working_set_bytes,cluster)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+            "refresh": 1, "regex": "", "type": "query"
+          },
+          {
+            "current": {},
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "definition": "label_values(container_memory_working_set_bytes{cluster=~\"$cluster\"}, namespace)",
+            "includeAll": true,
+            "allValue": ".*",
+            "label": "Namespace",
+            "name": "namespace",
+            "options": [],
+            "query": {"query": "label_values(container_memory_working_set_bytes{cluster=~\"$cluster\"}, namespace)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+            "refresh": 1, "regex": "", "sort": 1, "multi": false, "type": "query"
+          },
+          {
+            "current": {},
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "definition": "label_values(container_memory_working_set_bytes{cluster=~\"$cluster\",namespace=~\"$namespace\"}, pod)",
+            "includeAll": true,
+            "allValue": ".*",
+            "label": "Pod",
+            "name": "pod",
+            "options": [],
+            "query": {"query": "label_values(container_memory_working_set_bytes{cluster=~\"$cluster\",namespace=~\"$namespace\"}, pod)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+            "refresh": 1, "regex": "", "sort": 1, "multi": false, "type": "query"
+          },
+          {
+            "current": {},
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "definition": "label_values(container_memory_working_set_bytes{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\"}, container)",
+            "includeAll": true,
+            "allValue": ".*",
+            "label": "Container",
+            "name": "container",
+            "options": [],
+            "query": {"query": "label_values(container_memory_working_set_bytes{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\"}, container)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+            "refresh": 1, "regex": "", "sort": 1, "multi": false, "type": "query"
+          }
+        ]
+      },
+      "time": {"from": "now-15m", "to": "now"},
+      "timepicker": {},
+      "timezone": "",
+      "title": "Kubernetes / RAM and CPU Utilization",
+      "uid": "k8s-ram-cpu",
+      "version": 1
+    }

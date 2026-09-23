@@ -54,6 +54,21 @@ envValueFrom:
     secretKeyRef:
       name: monitoring-alertmanager-credentials
       key: SMTP_PASSWORD
+  # Postgres monitoring-role credentials, used by the DB-monitoring org's native
+  # PostgreSQL datasources below (a read-only role, e.g. a member of
+  # pg_monitor/pg_read_all_stats — not superuser). Create
+  # monitoring-postgres-exporter-secret out-of-band, not in git:
+  #   kubectl create secret generic monitoring-postgres-exporter-secret -n monitoring \
+  #     --from-literal=POSTGRES_EXPORTER_USER=<your-readonly-user> \
+  #     --from-literal=POSTGRES_EXPORTER_PASSWORD=<your-readonly-password>
+  POSTGRES_EXPORTER_USER:
+    secretKeyRef:
+      name: monitoring-postgres-exporter-secret
+      key: POSTGRES_EXPORTER_USER
+  POSTGRES_EXPORTER_PASSWORD:
+    secretKeyRef:
+      name: monitoring-postgres-exporter-secret
+      key: POSTGRES_EXPORTER_PASSWORD
 
 # ── Grafana configuration ─────────────────────────────────────────────────────
 grafana.ini:
@@ -228,6 +243,102 @@ datasources:
         jsonData:
           implementation: prometheus
           handleGrafanaManagedAlerts: true
+
+      # ── DB-monitoring org ──────────────────────────────────────────────────
+      # A separate, fixed, hand-defined Grafana org — NOT one of the per-namespace
+      # orgs grafana-org-reconciler discovers/manages dynamically. Its existence
+      # and its 3 dashboards are kept in sync by hub/grafana-db-monitoring-reconciler;
+      # the datasources below are provisioned declaratively here instead, since this
+      # org's shape (one fixed org, hand-picked dashboards) never changes at runtime.
+      #
+      # Grafana assigns this org's numeric id when it's first created (e.g. via the
+      # reconciler's POST /api/orgs call) — query it with
+      # `GET /api/orgs/name/DB-monitoring` afterwards and substitute the id below.
+      # It is whatever your instance actually assigns, not a fixed convention to
+      # hardcode ahead of time.
+      #
+      # Native Postgres datasources, one per cluster node, using a read-only
+      # monitoring role (e.g. a member of pg_monitor/pg_read_all_stats — not
+      # superuser). jsonData.database MUST be set in addition to the top-level
+      # database field — the query editor's frontend reads jsonData.database
+      # specifically; without it every panel silently shows "No data" even though
+      # the connection itself works and the backend query succeeds.
+      #
+      # To add another Postgres cluster node: copy one PSQL0X block below, point
+      # it at the new host, give it a new uid, and reuse/extend
+      # monitoring-postgres-exporter-secret for its credentials. No dashboard JSON
+      # change is needed — the psql-cluster dashboard's "Host (DB connections)"
+      # filter is a Grafana datasource-type variable that lists every
+      # postgres-type datasource in this org automatically.
+      - name: "PSQL01 (<YOUR_PSQL_HOST_1>)"
+        type: postgres
+        uid: psql01-pg
+        orgId: <YOUR_DB_MONITORING_ORG_ID>
+        url: <YOUR_PSQL_HOST_1>:5432
+        user: ${POSTGRES_EXPORTER_USER}
+        database: postgres
+        jsonData:
+          sslmode: disable
+          postgresVersion: 1700
+          timescaledb: false
+          database: postgres
+        secureJsonData:
+          password: ${POSTGRES_EXPORTER_PASSWORD}
+
+      - name: "PSQL02 (<YOUR_PSQL_HOST_2>)"
+        type: postgres
+        uid: psql02-pg
+        orgId: <YOUR_DB_MONITORING_ORG_ID>
+        url: <YOUR_PSQL_HOST_2>:5432
+        user: ${POSTGRES_EXPORTER_USER}
+        database: postgres
+        jsonData:
+          sslmode: disable
+          postgresVersion: 1700
+          timescaledb: false
+          database: postgres
+        secureJsonData:
+          password: ${POSTGRES_EXPORTER_PASSWORD}
+
+      - name: "PSQL03 (<YOUR_PSQL_HOST_3>)"
+        type: postgres
+        uid: psql03-pg
+        orgId: <YOUR_DB_MONITORING_ORG_ID>
+        url: <YOUR_PSQL_HOST_3>:5432
+        user: ${POSTGRES_EXPORTER_USER}
+        database: postgres
+        jsonData:
+          sslmode: disable
+          postgresVersion: 1700
+          timescaledb: false
+          database: postgres
+        secureJsonData:
+          password: ${POSTGRES_EXPORTER_PASSWORD}
+
+      # Node-level (node_exporter) + postgres_exporter metrics, scraped by your
+      # primary Prometheus instance — used by the psql-cluster dashboard's "Node
+      # Live Metrics" row (host CPU/memory/disk/network, which Postgres SQL
+      # itself can't expose).
+      - name: "Prometheus (DB-Monitoring Primary)"
+        type: prometheus
+        uid: prom-db-primary
+        orgId: <YOUR_DB_MONITORING_ORG_ID>
+        url: http://<YOUR_PROMETHEUS_HOST>:9090
+        isDefault: true
+        jsonData:
+          httpMethod: POST
+
+      # MariaDB clusters — node_exporter + mysqld_exporter, scraped by a second,
+      # separate Prometheus instance from the one above. Used by the MariaDB
+      # dashboards' "Node Live Metrics" rows.
+      - name: "Prometheus (DB-Monitoring Secondary)"
+        type: prometheus
+        uid: prom-db-secondary
+        orgId: <YOUR_DB_MONITORING_ORG_ID>
+        url: http://<YOUR_SECONDARY_PROMETHEUS_HOST>:9090
+        isDefault: false
+        jsonData:
+          httpMethod: POST
 
 # ── Dashboard sidecar — auto-loads ConfigMaps labeled grafana_dashboard=1 ─────
 sidecar:

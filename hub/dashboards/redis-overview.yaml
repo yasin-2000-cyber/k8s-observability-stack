@@ -1,0 +1,513 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-redis-overview
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "Infrastructure"
+data:
+  redis-overview.json: |
+    {
+      "description": "Redis overview built on redis_exporter metrics scraped through Mimir. Works for any Redis instance in any cluster/namespace — pick cluster/namespace/pod/container to scope to one instance. job!=\"kubernetes-pods\" is excluded from every query to avoid double-counting instances scraped both via ServiceMonitor and pod annotation.",
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 0,
+      "links": [],
+      "panels": [
+        {
+          "collapsed": false,
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+          "id": 100, "panels": [], "title": "Overview", "type": "row"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "1 = exporter successfully scraped the Redis instance",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"}, "mappings": [
+                {"type": "value", "options": {"0": {"text": "Down", "color": "red"}, "1": {"text": "Up", "color": "green"}}}
+              ],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": 0}, {"color": "green", "value": 1}]}
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 0, "y": 1},
+          "id": 1,
+          "options": {
+            "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "textMode": "auto", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "max(redis_up{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"})",
+            "instant": true, "range": false, "refId": "A"
+          }],
+          "title": "Status",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "thresholds"}, "mappings": [], "textMode": "name",
+              "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": 0}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 3, "y": 1},
+          "id": 2,
+          "options": {
+            "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "textMode": "name", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "redis_instance_info{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"}",
+            "instant": true, "legendFormat": "{{ redis_version }}", "range": false, "refId": "A"
+          }],
+          "title": "Version",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "thresholds"}, "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": 0}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 6, "y": 1},
+          "id": 3,
+          "options": {
+            "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "textMode": "name", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "redis_instance_info{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"}",
+            "instant": true, "legendFormat": "{{ role }}", "range": false, "refId": "A"
+          }],
+          "title": "Role",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "thresholds"}, "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": 0}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 9, "y": 1},
+          "id": 4,
+          "options": {
+            "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "textMode": "name", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "redis_instance_info{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"}",
+            "instant": true, "legendFormat": "{{ maxmemory_policy }}", "range": false, "refId": "A"
+          }],
+          "title": "Eviction Policy",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "thresholds"}, "mappings": [], "unit": "s",
+              "thresholds": {"mode": "absolute", "steps": [{"color": "dark-green", "value": 0}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 12, "y": 1},
+          "id": 5,
+          "options": {
+            "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "textMode": "auto", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "max(redis_uptime_in_seconds{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"})",
+            "instant": true, "range": false, "refId": "A"
+          }],
+          "title": "Uptime",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "thresholds"}, "mappings": [], "unit": "short",
+              "thresholds": {"mode": "absolute", "steps": [{"color": "dark-blue", "value": 0}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 15, "y": 1},
+          "id": 6,
+          "options": {
+            "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "textMode": "auto", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "sum(redis_connected_clients{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"})",
+            "range": true, "refId": "A"
+          }],
+          "title": "Connected Clients",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "thresholds"}, "mappings": [], "unit": "short",
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}, {"color": "red", "value": 1}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 18, "y": 1},
+          "id": 7,
+          "options": {
+            "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "textMode": "auto", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "sum(redis_blocked_clients{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"})",
+            "range": true, "refId": "A"
+          }],
+          "title": "Blocked Clients",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "thresholds"}, "mappings": [], "unit": "short",
+              "thresholds": {"mode": "absolute", "steps": [{"color": "dark-blue", "value": 0}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 21, "y": 1},
+          "id": 8,
+          "options": {
+            "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "textMode": "auto", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "sum(redis_connected_slaves{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"})",
+            "range": true, "refId": "A"
+          }],
+          "title": "Connected Replicas",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "thresholds"}, "mappings": [], "unit": "ops",
+              "thresholds": {"mode": "absolute", "steps": [{"color": "dark-green", "value": 0}, {"color": "dark-yellow", "value": 22000}, {"color": "dark-red", "value": 25000}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 5, "w": 6, "x": 0, "y": 5},
+          "id": 9,
+          "options": {
+            "colorMode": "background", "graphMode": "area", "justifyMode": "center", "orientation": "auto",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "textMode": "auto", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "sum(rate(redis_commands_processed_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"}[5m]))",
+            "legendFormat": "Ops/sec", "range": true, "refId": "A"
+          }],
+          "title": "Ops/sec",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "palette-classic"}, "mappings": [], "unit": "Bps",
+              "custom": {"drawStyle": "line", "fillOpacity": 15, "lineWidth": 2, "spanNulls": false},
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 10, "w": 9, "x": 6, "y": 5},
+          "id": 10,
+          "options": {
+            "legend": {"calcs": ["mean", "max"], "displayMode": "list", "placement": "bottom", "showLegend": true},
+            "tooltip": {"hideZeros": false, "mode": "multi", "sort": "none"}
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [
+            {"datasource": {"type": "prometheus", "uid": "mimir"}, "editorMode": "code", "expr": "sum(rate(redis_net_input_bytes_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"}[5m]))", "legendFormat": "Input", "range": true, "refId": "A"},
+            {"datasource": {"type": "prometheus", "uid": "mimir"}, "editorMode": "code", "expr": "sum(rate(redis_net_output_bytes_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"}[5m]))", "legendFormat": "Output", "range": true, "refId": "B"}
+          ],
+          "title": "Network",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"mappings": [], "min": 0, "unit": "decbytes",
+              "thresholds": {"mode": "absolute", "steps": [{"color": "dark-green", "value": 0}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 10, "w": 9, "x": 15, "y": 5},
+          "id": 11,
+          "options": {
+            "displayMode": "lcd",
+            "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false},
+            "maxVizHeight": 300, "minVizHeight": 16, "minVizWidth": 8, "namePlacement": "auto", "orientation": "horizontal",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showUnfilled": true, "sizing": "auto", "valueMode": "color"
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [
+            {"datasource": {"type": "prometheus", "uid": "mimir"}, "editorMode": "code", "expr": "sum(redis_memory_used_bytes{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"})", "instant": true, "legendFormat": "Used Memory", "range": false, "refId": "A"},
+            {"datasource": {"type": "prometheus", "uid": "mimir"}, "editorMode": "code", "expr": "sum(redis_memory_used_peak_bytes{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"})", "instant": true, "legendFormat": "Used Memory, Peak", "range": false, "refId": "B"},
+            {"datasource": {"type": "prometheus", "uid": "mimir"}, "editorMode": "code", "expr": "sum(redis_memory_used_lua_bytes{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"})", "instant": true, "legendFormat": "Used Memory, LUA", "range": false, "refId": "C"},
+            {"datasource": {"type": "prometheus", "uid": "mimir"}, "editorMode": "code", "expr": "sum(redis_config_maxmemory{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"})", "instant": true, "legendFormat": "Memory Limit", "range": false, "refId": "D"},
+            {"datasource": {"type": "prometheus", "uid": "mimir"}, "editorMode": "code", "expr": "sum(redis_total_system_memory_bytes{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"})", "instant": true, "legendFormat": "Total System Memory", "range": false, "refId": "E"}
+          ],
+          "title": "Memory",
+          "type": "bargauge"
+        },
+        {
+          "collapsed": false,
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 15},
+          "id": 101, "panels": [], "title": "Keys & Keyspace", "type": "row"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "thresholds"}, "mappings": [], "unit": "short",
+              "thresholds": {"mode": "absolute", "steps": [{"color": "dark-green", "value": 0}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 5, "w": 4, "x": 0, "y": 16},
+          "id": 12,
+          "options": {
+            "colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "textMode": "auto", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "sum(redis_db_keys{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"})",
+            "range": true, "refId": "A"
+          }],
+          "title": "Number of Keys",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"mappings": [], "min": 0, "unit": "short",
+              "thresholds": {"mode": "absolute", "steps": [{"color": "dark-green", "value": 0}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 5, "w": 10, "x": 4, "y": 16},
+          "id": 13,
+          "options": {
+            "displayMode": "lcd",
+            "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false},
+            "maxVizHeight": 300, "minVizHeight": 16, "minVizWidth": 8, "namePlacement": "auto", "orientation": "horizontal",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showUnfilled": true, "sizing": "auto", "valueMode": "color"
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [
+            {"datasource": {"type": "prometheus", "uid": "mimir"}, "editorMode": "code", "expr": "sum(redis_expired_keys_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"})", "instant": true, "legendFormat": "Expired", "range": false, "refId": "A"},
+            {"datasource": {"type": "prometheus", "uid": "mimir"}, "editorMode": "code", "expr": "sum(redis_evicted_keys_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"})", "instant": true, "legendFormat": "Evicted", "range": false, "refId": "B"}
+          ],
+          "title": "Keys (cumulative since start)",
+          "type": "bargauge"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"mappings": [], "min": 0, "unit": "short",
+              "thresholds": {"mode": "absolute", "steps": [{"color": "dark-green", "value": 0}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 5, "w": 10, "x": 14, "y": 16},
+          "id": 14,
+          "options": {
+            "displayMode": "lcd",
+            "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false},
+            "maxVizHeight": 300, "minVizHeight": 16, "minVizWidth": 8, "namePlacement": "auto", "orientation": "horizontal",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showUnfilled": true, "sizing": "auto", "valueMode": "color"
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [
+            {"datasource": {"type": "prometheus", "uid": "mimir"}, "editorMode": "code", "expr": "sum(redis_keyspace_hits_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"})", "instant": true, "legendFormat": "Hits", "range": false, "refId": "A"},
+            {"datasource": {"type": "prometheus", "uid": "mimir"}, "editorMode": "code", "expr": "sum(redis_keyspace_misses_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"})", "instant": true, "legendFormat": "Misses", "range": false, "refId": "B"}
+          ],
+          "title": "Keyspace (cumulative since start)",
+          "type": "bargauge"
+        },
+        {
+          "collapsed": false,
+          "gridPos": {"h": 1, "w": 24, "x": 0, "y": 21},
+          "id": 102, "panels": [], "title": "Commands & Slowlog", "type": "row"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "Top commands by call rate over the last 5 minutes",
+          "fieldConfig": {
+            "defaults": {"custom": {"cellOptions": {"type": "color-text"}, "footer": {"reducers": []}, "inspect": false},
+              "mappings": [], "unit": "ops",
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 10, "w": 12, "x": 0, "y": 22},
+          "id": 15,
+          "options": {"cellHeight": "sm", "showHeader": true, "sortBy": [{"desc": true, "displayName": "Calls/sec"}]},
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "topk(15, sum by (cmd) (rate(redis_commands_total{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"}[5m])))",
+            "format": "table", "instant": true, "legendFormat": "{{ cmd }}", "range": false, "refId": "A"
+          }],
+          "transformations": [
+            {"id": "organize", "options": {"excludeByName": {"Time": true}, "renameByName": {"Value": "Calls/sec"}}}
+          ],
+          "title": "Command statistics",
+          "type": "table"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "thresholds"}, "mappings": [], "unit": "short",
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 1}, {"color": "red", "value": 10}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 5, "w": 6, "x": 12, "y": 22},
+          "id": 16,
+          "options": {
+            "colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "textMode": "auto", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "sum(redis_slowlog_length{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"})",
+            "range": true, "refId": "A"
+          }],
+          "title": "Slowlog Length",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "fieldConfig": {
+            "defaults": {"color": {"mode": "thresholds"}, "mappings": [], "unit": "s",
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 0.1}, {"color": "red", "value": 1}]}},
+            "overrides": []
+          },
+          "gridPos": {"h": 5, "w": 6, "x": 18, "y": 22},
+          "id": 17,
+          "options": {
+            "colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "textMode": "auto", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "max(redis_last_slow_execution_duration_seconds{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",service=~\"$service\",job!=\"kubernetes-pods\"})",
+            "range": true, "refId": "A"
+          }],
+          "title": "Last Slow Execution Duration",
+          "type": "stat"
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 42,
+      "tags": ["redis", "kubernetes"],
+      "templating": {
+        "list": [
+          {
+            "current": {},
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "definition": "label_values(redis_up{job!=\"kubernetes-pods\"}, cluster)",
+            "includeAll": true, "allValue": ".*",
+            "label": "Cluster", "name": "cluster",
+            "options": [],
+            "query": {"query": "label_values(redis_up{job!=\"kubernetes-pods\"}, cluster)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+            "refresh": 2, "regex": "", "sort": 1, "multi": false, "type": "query"
+          },
+          {
+            "current": {},
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "definition": "label_values(redis_up{cluster=~\"$cluster\",job!=\"kubernetes-pods\"}, namespace)",
+            "includeAll": true, "allValue": ".*",
+            "label": "Namespace", "name": "namespace",
+            "options": [],
+            "query": {"query": "label_values(redis_up{cluster=~\"$cluster\",job!=\"kubernetes-pods\"}, namespace)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+            "refresh": 2, "regex": "", "sort": 1, "multi": false, "type": "query"
+          },
+          {
+            "current": {},
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "definition": "label_values(redis_up{cluster=~\"$cluster\",namespace=~\"$namespace\",job!=\"kubernetes-pods\"}, pod)",
+            "includeAll": true, "allValue": ".*",
+            "label": "Pod", "name": "pod",
+            "options": [],
+            "query": {"query": "label_values(redis_up{cluster=~\"$cluster\",namespace=~\"$namespace\",job!=\"kubernetes-pods\"}, pod)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+            "refresh": 2, "regex": "", "sort": 1, "multi": false, "type": "query"
+          },
+          {
+            "current": {},
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "definition": "label_values(redis_up{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",job!=\"kubernetes-pods\"}, container)",
+            "includeAll": true, "allValue": ".*",
+            "label": "Container", "name": "container",
+            "options": [],
+            "query": {"query": "label_values(redis_up{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",job!=\"kubernetes-pods\"}, container)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+            "refresh": 2, "regex": "", "sort": 1, "multi": false, "type": "query"
+          },
+          {
+            "current": {},
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "definition": "label_values(redis_up{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",job!=\"kubernetes-pods\"}, service)",
+            "includeAll": true, "allValue": ".*",
+            "label": "Service", "name": "service",
+            "options": [],
+            "query": {"query": "label_values(redis_up{cluster=~\"$cluster\",namespace=~\"$namespace\",pod=~\"$pod\",container=~\"$container\",job!=\"kubernetes-pods\"}, service)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+            "refresh": 2, "regex": "", "sort": 1, "multi": false, "type": "query"
+          }
+        ]
+      },
+      "time": {"from": "now-1h", "to": "now"},
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "Redis",
+      "uid": "redis-overview",
+      "version": 1
+    }

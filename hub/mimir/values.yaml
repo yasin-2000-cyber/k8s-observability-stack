@@ -43,6 +43,17 @@ mimir:
       backend: s3
       s3:
         bucket_name: mimir-blocks   # rename to match your S3 bucket
+      tsdb:
+        block_ranges_period:
+          - 10m
+        # Ship blocks to S3 every 10m instead of Mimir's 2h default: this bounds the
+        # window of unshipped data lost if an ingester pod is rescheduled/lost.
+        # retention_period lowered from Mimir's stock 13h default so the ingester's
+        # local disk doesn't fill with blocks that have already been shipped to S3.
+        # 4h stays safely above store-gateway's bucket-store.sync-interval (15m default),
+        # so store-gateway has already discovered a block long before the ingester
+        # drops its local copy.
+        retention_period: 4h
 
     ruler_storage:
       backend: s3
@@ -127,13 +138,17 @@ store_gateway:
     enabled: false
   persistentVolume:
     enabled: false
+  # limits.memory raised from 1Gi: a single-replica store-gateway can OOM while
+  # reloading index-headers once you have several federated tenants at longer
+  # retention, and because it's single-replica, each OOM breaks historical
+  # queries for every tenant until it resyncs.
   resources:
     requests:
       cpu: 200m
       memory: 512Mi
     limits:
       cpu: 1000m
-      memory: 1Gi
+      memory: 8Gi
 
 compactor:
   replicas: 1

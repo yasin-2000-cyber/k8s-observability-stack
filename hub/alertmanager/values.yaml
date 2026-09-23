@@ -1,16 +1,19 @@
 # ── Persistence ───────────────────────────────────────────────────────────────
+# Disabled on purpose: Alertmanager's nflog/silences state is small and disposable.
+# A PVC backed by a storage class that becomes degraded or unavailable can wedge
+# Alertmanager's maintenance ticker, so an emptyDir (no PVC) is safer for prod
+# reliability than persisting this state.
 persistence:
-  enabled: true
-  size: 2Gi
-  storageClass: "<YOUR_STORAGE_CLASS>"   # e.g. standard, gp2, longhorn
+  enabled: false
 
 resources:
   requests:
     cpu: 50m
-    memory: 64Mi
+    memory: 128Mi
   limits:
     cpu: 200m
-    memory: 256Mi
+    # Raised from 256Mi: the lower limit caused repeated OOMKills under bursty alert volume.
+    memory: 512Mi
 
 # ── AlertManager config ───────────────────────────────────────────────────────
 # ${SMTP_PASSWORD} is substituted at pod startup by the config-renderer init container
@@ -26,6 +29,9 @@ config:
     resolve_timeout: 5m
     smtp_from: "alerts@example.com"                  # replace with your sender address
     smtp_smarthost: "smtp.office365.com:587"         # replace with your SMTP server
+    # If your provider deprecates SMTP basic-auth (as Microsoft is doing for Office365),
+    # a drop-in relay alternative is SendGrid: smarthost "smtp.sendgrid.net:587",
+    # username literally the string "apikey", password = your SendGrid API key.
     smtp_auth_username: "alerts@example.com"         # replace with your SMTP username
     smtp_auth_password: ${SMTP_PASSWORD}
     smtp_require_tls: true
@@ -41,6 +47,12 @@ config:
       - match:
           cluster: spoke-1
         receiver: "blackhole"
+      # Alternative example: mute a known-noisy or intentionally-disabled workload by
+      # namespace instead of by cluster — useful when the workload can run on any
+      # cluster (a different axis than the cluster-based mute above).
+      # - match:
+      #     namespace: <YOUR_NAMESPACE>
+      #   receiver: "blackhole"
       - match:
           severity: critical
         receiver: "email-critical"

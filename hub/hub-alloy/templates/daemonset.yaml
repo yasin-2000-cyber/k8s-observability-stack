@@ -41,6 +41,9 @@ spec:
             - /etc/alloy/config.alloy
             - --server.http.listen-addr=0.0.0.0:12345
             - --stability.level=generally-available
+            - --cluster.enabled=true
+            - --cluster.node-name=$(NODE_NAME)
+            - --cluster.discover-peers=provider=k8s namespace=monitoring label_selector="app.kubernetes.io/name=hub-alloy"
           ports:
             - name: http-metrics
               containerPort: 12345

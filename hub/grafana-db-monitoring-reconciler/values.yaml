@@ -1,0 +1,29 @@
+schedule: "*/30 * * * *"   # run every 30 minutes
+
+image: dtzar/helm-kubectl:4.2.1
+
+grafanaUrl: http://grafana.monitoring.svc.cluster.local:80
+
+# Fixed, hand-defined org name — unlike grafana-org-reconciler this org is NOT
+# discovered from live namespaces/Mimir tenants. Its datasources are provisioned
+# declaratively via hub/grafana/values.yaml's datasources block (see the
+# "DB-monitoring org" section there), not by this script — this script only
+# guards the org's existence and keeps its dashboards in sync with what's
+# committed to git.
+orgName: "DB-monitoring"
+
+# Dashboard uids to actively delete from the org if present — orphan cleanup for
+# a past rename/retirement. The reconciler only upserts by each dashboard's
+# current fixed uid; it never deletes one that disappears from the source, so an
+# old uid would otherwise stay live forever alongside its replacement. Empty by
+# default (a fresh install has no orphans yet) — add uids here if you later
+# rename one of this chart's dashboard files.
+disallowedDashboardUids: []
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

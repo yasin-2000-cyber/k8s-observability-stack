@@ -1,0 +1,394 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-k8s-overview
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "Infrastructure"
+data:
+  k8s-overview.json: |
+    {
+      "description": "Kubernetes cluster overview dashboard showing resource counts, status, and utilization metrics",
+      "editable": true,
+      "fiscalYearStartMonth": 0,
+      "graphTooltip": 0,
+      "links": [],
+      "panels": [
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "Total number of clusters being monitored",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": 0}]}
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 0, "y": 0},
+          "id": 1,
+          "options": {
+            "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+            "percentChangeColorMode": "standard",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showPercentChange": false, "textMode": "auto", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "count(count by (cluster) (kube_namespace_created))",
+            "instant": true, "range": false, "refId": "A"
+          }],
+          "title": "CLUSTERS",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "Total number of namespaces in the selected cluster",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": 0}]}
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 3, "y": 0},
+          "id": 2,
+          "options": {
+            "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+            "percentChangeColorMode": "standard",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showPercentChange": false, "textMode": "auto", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "count(kube_namespace_created{cluster=~\"$cluster\"})",
+            "instant": true, "range": false, "refId": "A"
+          }],
+          "title": "NAMESPACES",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "Total number of nodes in the selected cluster",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": 0}]}
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 6, "y": 0},
+          "id": 3,
+          "options": {
+            "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+            "percentChangeColorMode": "standard",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showPercentChange": false, "textMode": "auto", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "count(kube_node_info{cluster=~\"$cluster\"})",
+            "instant": true, "range": false, "refId": "A"
+          }],
+          "title": "NODES",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "Total number of deployments in the selected cluster and namespace",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": 0}]}
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 9, "y": 0},
+          "id": 4,
+          "options": {
+            "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+            "percentChangeColorMode": "standard",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showPercentChange": false, "textMode": "auto", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "count(kube_deployment_created{cluster=~\"$cluster\", namespace=~\"$namespace\"})",
+            "instant": true, "range": false, "refId": "A"
+          }],
+          "title": "DEPLOYMENTS",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "Total number of pods in the selected cluster and namespace",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": 0}]}
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 12, "y": 0},
+          "id": 5,
+          "options": {
+            "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+            "percentChangeColorMode": "standard",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showPercentChange": false, "textMode": "auto", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "count(kube_pod_info{cluster=~\"$cluster\", namespace=~\"$namespace\"})",
+            "instant": true, "range": false, "refId": "A"
+          }],
+          "title": "PODS",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "Total number of containers in the selected cluster and namespace",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": 0}]}
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 15, "y": 0},
+          "id": 6,
+          "options": {
+            "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+            "percentChangeColorMode": "standard",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showPercentChange": false, "textMode": "auto", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "count(container_cpu_usage_seconds_total{job=\"cadvisor\", cluster=~\"$cluster\", namespace=~\"$namespace\", container!=\"\", container!=\"POD\"})",
+            "instant": true, "range": false, "refId": "A"
+          }],
+          "title": "CONTAINERS",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "Total number of services in the selected cluster and namespace",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": 0}]}
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 4, "w": 3, "x": 18, "y": 0},
+          "id": 7,
+          "options": {
+            "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto",
+            "percentChangeColorMode": "standard",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showPercentChange": false, "textMode": "auto", "wideLayout": true
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "count(kube_service_info{cluster=~\"$cluster\", namespace=~\"$namespace\"})",
+            "instant": true, "range": false, "refId": "A"
+          }],
+          "title": "SERVICES",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "Cluster-wide CPU utilization percentage",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"}, "mappings": [], "max": 100, "min": 0,
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 70}, {"color": "red", "value": 85}]},
+              "unit": "percent"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+          "id": 8,
+          "options": {
+            "minVizHeight": 75, "minVizWidth": 75, "orientation": "auto",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showThresholdLabels": false, "showThresholdMarkers": true, "sizing": "auto"
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "sum(rate(container_cpu_usage_seconds_total{job=\"cadvisor\",cluster=~\"$cluster\",namespace=~\"$namespace\"}[5m])) / sum(machine_cpu_cores{cluster=~\"$cluster\"}) * 100",
+            "range": true, "refId": "A"
+          }],
+          "title": "CPU Utilization",
+          "type": "gauge"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "Cluster-wide memory utilization percentage",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"}, "mappings": [], "max": 100, "min": 0,
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 70}, {"color": "red", "value": 85}]},
+              "unit": "percent"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+          "id": 9,
+          "options": {
+            "minVizHeight": 75, "minVizWidth": 75, "orientation": "auto",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showThresholdLabels": false, "showThresholdMarkers": true, "sizing": "auto"
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [{
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "editorMode": "code",
+            "expr": "sum(container_memory_working_set_bytes{job=\"cadvisor\",cluster=~\"$cluster\",namespace=~\"$namespace\"}) / sum(machine_memory_bytes{cluster=~\"$cluster\"}) * 100",
+            "range": true, "refId": "A"
+          }],
+          "title": "Memory Utilization",
+          "type": "gauge"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "Node status overview showing Ready vs NotReady nodes",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"}, "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}]}
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+          "id": 10,
+          "options": {
+            "displayMode": "gradient",
+            "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false},
+            "maxVizHeight": 300, "minVizHeight": 10, "minVizWidth": 0, "namePlacement": "auto", "orientation": "horizontal",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showUnfilled": true, "sizing": "auto", "valueMode": "color"
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [
+            {
+              "datasource": {"type": "prometheus", "uid": "mimir"},
+              "editorMode": "code",
+              "expr": "sum(kube_node_status_condition{cluster=~\"$cluster\",condition=\"Ready\",status=\"true\"}) by (condition)",
+              "instant": false, "legendFormat": "Ready", "range": true, "refId": "A"
+            },
+            {
+              "datasource": {"type": "prometheus", "uid": "mimir"},
+              "editorMode": "code",
+              "expr": "sum(kube_node_status_condition{cluster=~\"$cluster\",condition=\"Ready\",status=\"false\"}) by (condition)",
+              "instant": false, "legendFormat": "NotReady", "range": true, "refId": "B"
+            }
+          ],
+          "title": "Node Status",
+          "type": "bargauge"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "mimir"},
+          "description": "Pod status overview showing Running vs Failed vs Pending pods",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"}, "mappings": [],
+              "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": 0}]}
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+          "id": 11,
+          "options": {
+            "displayMode": "gradient",
+            "legend": {"calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false},
+            "maxVizHeight": 300, "minVizHeight": 10, "minVizWidth": 0, "namePlacement": "auto", "orientation": "horizontal",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+            "showUnfilled": true, "sizing": "auto", "valueMode": "color"
+          },
+          "pluginVersion": "12.2.0",
+          "targets": [
+            {
+              "datasource": {"type": "prometheus", "uid": "mimir"},
+              "editorMode": "code",
+              "expr": "sum(kube_pod_status_phase{cluster=~\"$cluster\",namespace=~\"$namespace\",phase=\"Running\"}) by (phase)",
+              "instant": false, "legendFormat": "Running", "range": true, "refId": "A"
+            },
+            {
+              "datasource": {"type": "prometheus", "uid": "mimir"},
+              "editorMode": "code",
+              "expr": "sum(kube_pod_status_phase{cluster=~\"$cluster\",namespace=~\"$namespace\",phase=\"Failed\"}) by (phase)",
+              "instant": false, "legendFormat": "Failed", "range": true, "refId": "B"
+            },
+            {
+              "datasource": {"type": "prometheus", "uid": "mimir"},
+              "editorMode": "code",
+              "expr": "sum(kube_pod_status_phase{cluster=~\"$cluster\",namespace=~\"$namespace\",phase=\"Pending\"}) by (phase)",
+              "instant": false, "legendFormat": "Pending", "range": true, "refId": "C"
+            }
+          ],
+          "title": "Pod Status",
+          "type": "bargauge"
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 42,
+      "tags": ["kubernetes", "cluster", "overview"],
+      "templating": {
+        "list": [
+          {
+            "current": {},
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "definition": "label_values(kube_namespace_created, cluster)",
+            "includeAll": true,
+            "label": "cluster",
+            "name": "cluster",
+            "options": [],
+            "query": {"query": "label_values(kube_namespace_created, cluster)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+            "refresh": 2, "regex": "", "sort": 1, "type": "query"
+          },
+          {
+            "current": {},
+            "datasource": {"type": "prometheus", "uid": "mimir"},
+            "definition": "label_values(kube_namespace_created{cluster=~\"$cluster\"}, namespace)",
+            "includeAll": true,
+            "label": "namespace",
+            "name": "namespace",
+            "options": [],
+            "query": {"query": "label_values(kube_namespace_created{cluster=~\"$cluster\"}, namespace)", "refId": "PrometheusVariableQueryEditor-VariableQuery"},
+            "refresh": 2, "regex": "", "sort": 1, "type": "query"
+          }
+        ]
+      },
+      "time": {"from": "now-15m", "to": "now"},
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "Kubernetes Overview",
+      "uid": "k8s-overview",
+      "version": 1
+    }

@@ -1,0 +1,5 @@
+apiVersion: v2
+name: grafana-db-monitoring-reconciler
+description: CronJob that ensures a fixed "DB-monitoring" Grafana org exists and keeps its PostgreSQL/MariaDB cluster dashboards in sync
+type: application
+version: 0.1.0

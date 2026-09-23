@@ -1,0 +1,146 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cert-sentinel.fullname" . }}
+  labels:
+    {{- include "cert-sentinel.labels" . | nindent 4 }}
+data:
+  check.sh: |
+    #!/bin/sh
+    # cert-sentinel — read-only. Reads cert files, reports expiry. Never writes.
+    set -u
+
+    # Mounted at the host's own paths on purpose: kubelet-client-current.pem is a
+    # symlink to an absolute path, and it dangles under any other mountpoint.
+    PKI=/etc/kubernetes/pki
+    CONF=/etc/kubernetes
+    KUBELET_PKI=/var/lib/kubelet/pki
+    WORK=/tmp/cs
+
+    # Exact days remaining, by bisection on `openssl x509 -checkend`.
+    # Avoids date-string parsing entirely, which busybox does not do portably.
+    days_left() {
+      f="$1"
+      openssl x509 -in "$f" -noout -checkend 0 >/dev/null 2>&1 || { echo -1; return; }
+      lo=0; hi=3650
+      while [ $((hi - lo)) -gt 1 ]; do
+        mid=$(( (lo + hi) / 2 ))
+        if openssl x509 -in "$f" -noout -checkend $((mid * 86400)) >/dev/null 2>&1; then
+          lo=$mid
+        else
+          hi=$mid
+        fi
+      done
+      echo "$lo"
+    }
+
+    not_after() { openssl x509 -in "$1" -noout -enddate 2>/dev/null | cut -d= -f2; }
+
+    # Pull the embedded client cert out of a kubeconfig so those expire visibly too.
+    extract_conf_cert() {
+      src="$1"; dst="$2"
+      grep -m1 'client-certificate-data:' "$src" 2>/dev/null \
+        | sed 's/.*client-certificate-data: *//' \
+        | base64 -d > "$dst" 2>/dev/null
+      [ -s "$dst" ]
+    }
+
+    rm -rf "$WORK"; mkdir -p "$WORK"
+
+    worst=0          # 0 healthy, 1 warning, 2 critical
+    expired=0
+    min_days=99999
+    lines=""
+    checked=0
+
+    # $3 = "soft" for certs whose expiry does not take the cluster down.
+    # kubelet.crt is the kubelet's self-signed SERVING cert; the apiserver does not
+    # verify it by default, so an expired one is hygiene, not an outage. Capping it
+    # at warning keeps 🔴 meaning "this will break the cluster".
+    add() {
+      name="$1"; file="$2"; soft="${3:-}"
+      [ -r "$file" ] || return 0
+      d=$(days_left "$file")
+      end=$(not_after "$file")
+      checked=$((checked + 1))
+      if [ "$d" -lt 0 ]; then
+        mark="🔴"; sev=2; d_txt="EXPIRED"
+      elif [ "$d" -le "$CRIT_DAYS" ]; then
+        mark="🔴"; sev=2; d_txt="${d}d"
+      elif [ "$d" -le "$WARN_DAYS" ]; then
+        mark="🟠"; sev=1; d_txt="${d}d"
+      else
+        mark="🟢"; sev=0; d_txt="${d}d"
+      fi
+      if [ "$soft" = "soft" ] && [ "$sev" -gt 1 ]; then
+        sev=1
+        mark="🟠"
+      fi
+      [ "$d" -lt 0 ] && expired=$((expired + 1))
+      [ "$sev" -gt "$worst" ] && worst=$sev
+      [ "$d" -ge 0 ] && [ "$d" -lt "$min_days" ] && min_days=$d
+      lines="${lines}${mark} ${name}: ${d_txt} (${end})
+    "
+    }
+
+    for f in "$PKI"/*.crt "$PKI"/etcd/*.crt; do
+      [ -e "$f" ] || continue
+      add "$(echo "$f" | sed "s|$PKI/||")" "$f"
+    done
+
+    for c in "$CONF"/admin.conf "$CONF"/controller-manager.conf "$CONF"/scheduler.conf "$CONF"/kubelet.conf "$CONF"/super-admin.conf; do
+      [ -r "$c" ] || continue
+      b="$WORK/$(basename "$c").crt"
+      extract_conf_cert "$c" "$b" && add "$(basename "$c")" "$b"
+    done
+
+    current="$KUBELET_PKI/kubelet-client-current.pem"
+    if [ ! -r "$current" ]; then
+      current=$(ls -1 "$KUBELET_PKI"/kubelet-client-2*.pem 2>/dev/null | sort | tail -1)
+    fi
+
+    for k in "$current" "$KUBELET_PKI"/kubelet.crt; do
+      [ -n "$k" ] && [ -r "$k" ] || continue
+      case "$k" in
+        *kubelet.crt) add "kubelet.crt (serving)" "$k" soft ;;
+        *)            add "kubelet-client (node identity)" "$k" ;;
+      esac
+    done
+
+    case "$worst" in
+      2) badge="🔴"; word="CRITICAL" ;;
+      1) badge="🟠"; word="WARNING" ;;
+      *) badge="🟢"; word="OK" ;;
+    esac
+
+    if [ "$expired" -gt 0 ]; then
+      detail="$checked certs, $expired EXPIRED, soonest valid ${min_days}d"
+    else
+      detail="$checked certs, soonest ${min_days}d"
+    fi
+    summary="$badge cert-sentinel $word — node $NODE_NAME — $detail"
+
+    echo "$summary"
+    printf '%s\n' "$lines"
+
+    # Kuma push fires on EVERY run, healthy or not. A missed heartbeat therefore
+    # means the checker died, not that the certs are fine.
+    if [ -n "${KUMA_PUSH_URL:-}" ]; then
+      [ "$worst" -eq 0 ] && kstatus=up || kstatus=down
+      wget -q -O /dev/null --timeout=15 \
+        "${KUMA_PUSH_URL}?status=${kstatus}&msg=$(echo "$summary" | tr ' ' '+')&ping=${min_days}" \
+        || echo "cert-sentinel: kuma push failed"
+    fi
+
+    # Telegram is opt-in and deliberately quiet: only speaks when something is wrong.
+    if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ] && [ "$worst" -gt 0 ]; then
+      body="$summary
+
+    $lines"
+      wget -q -O /dev/null --timeout=15 --post-data \
+        "chat_id=${TELEGRAM_CHAT_ID}&text=$(echo "$body" | sed 's/ /%20/g; s/$/%0A/' | tr -d '\n')" \
+        "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        || echo "cert-sentinel: telegram send failed"
+    fi
+
+    rm -rf "$WORK"
