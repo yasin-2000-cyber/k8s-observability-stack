@@ -153,11 +153,20 @@ Before deploying the hub stack, ensure the following are installed on the hub cl
 |-------------|-------|
 | Kubernetes 1.25+ | Tested on 1.28+ |
 | `cert-manager` | For automatic TLS certificates |
-| `ingress-nginx` | For HTTP(S) ingress |
+| `ingress-nginx` | For HTTP(S) ingress — see the required values below for the RED dashboard to work |
 | `external-dns` (optional) | For automatic DNS record management |
 | S3-compatible storage | MinIO, AWS S3, Wasabi, etc. — create buckets before deploying |
 | PostgreSQL 14+ | For Grafana backend (SQLite works for testing) |
 | A Prometheus Operator install (optional) | Only if you want `ServiceMonitor`-based scraping in addition to pod-annotation scraping |
+
+**`ingress-nginx` requirements for the RED dashboard (`dynamic-explorer`) to populate:** both `hub/hub-alloy` and `spoke/values.yaml` scrape ingress-nginx's controller metrics by discovering the metrics Service's Endpoints directly (not via the `ServiceMonitor` CRD, since that isn't reliably enabled on every cluster and its default relabeling collapses per-Ingress labels to constants). This discovery is hardcoded to a namespace literally named `ingress-nginx` and to the label selector `app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/component=controller` (the standard `ingress-nginx` chart's fixed labels, independent of release name). Install the chart with:
+```bash
+helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+  -n ingress-nginx --create-namespace \
+  --set controller.metrics.enabled=true \
+  --set controller.metrics.serviceMonitor.enabled=false
+```
+If `controller.metrics.enabled` is left `false`, the metrics port never exists and the scrape block silently finds zero targets — no error, just an empty RED dashboard.
 
 For each spoke cluster: the OTel Operator must be installed if you want auto-instrumentation. Apps hosted directly on the hub cluster can be auto-instrumented too — the hub stack installs its own OTel Operator (step 4 below).
 
