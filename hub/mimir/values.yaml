@@ -109,7 +109,7 @@ ingester:
       cpu: 1000m
       memory: 2Gi
     limits:
-      memory: 32Gi   # ingester is the most memory-hungry component; no CPU limit to avoid throttling under load
+      memory: 8Gi   # ingester is the most memory-hungry component; no CPU limit to avoid throttling under load
 
 distributor:
   replicas: 1
